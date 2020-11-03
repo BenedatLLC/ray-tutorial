@@ -22,12 +22,19 @@ def get_estimate(num_samples):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--redis-password', default=None,
+                        help="Password to use for Redis, if non-default")
+    parser.add_argument('--address', default='auto', type=str,
+                        help="Address for this Ray node")
     parser.add_argument('num_samples', metavar='NUM_SAMPLES', nargs='?',
                         default=1000, type=int,
                         help="Number of samples to obtain in parallel")
     args = parser.parse_args()
     print("Initializing Ray...")
-    ray.init(address='auto')
+    if args.redis_password is not None:
+        ray.init(address=args.address, _redis_password=args.redis_password)
+    else:
+        ray.init(address=args.address)
     get_estimate(args.num_samples)
 
 if __name__=='__main__':
