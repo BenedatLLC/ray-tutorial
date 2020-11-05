@@ -24,7 +24,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--redis-password', default=None,
                         help="Password to use for Redis, if non-default")
-    parser.add_argument('--address', default='auto', type=str,
+    parser.add_argument('--address', default=None, type=str,
                         help="Address for this Ray node")
     parser.add_argument('num_samples', metavar='NUM_SAMPLES', nargs='?',
                         default=1000, type=int,
