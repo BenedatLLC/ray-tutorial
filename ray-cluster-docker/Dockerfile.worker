@@ -1,0 +1,19 @@
+FROM rayproject/ray:latest
+RUN apt-get -y -q update
+RUN apt-get -y -q install vim-tiny # for looking at files
+# install the packages we will need for our demos
+RUN conda install scikit-learn jupyter ipython
+
+COPY ./entry_point_worker.sh /entry_point_worker.sh
+RUN chmod 755 /entry_point_worker.sh
+
+VOLUME /host
+WORKDIR /host
+# node mangager port (by default, this is random)
+EXPOSE 6381
+# object manager port (by default, this is random
+EXPOSE 6382
+# worker port range (we'll expose 500 ports)
+EXPOSE 10200-10700
+
+ENTRYPOINT ["/bin/bash", "/entry_point_worker.sh"]
