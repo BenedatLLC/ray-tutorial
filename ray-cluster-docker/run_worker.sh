@@ -13,14 +13,14 @@ echo "Using shared memory size of $SHM"
 echo docker pull rayproject/ray
 docker pull rayproject/ray
 
-echo docker build -t ray-cluster-worker -f Dockerfile.worker .
-docker build -t ray-cluster-worker -f Dockerfile.worker .
+#echo docker build -t ray-cluster-worker -f Dockerfile.worker .
+#docker build -t ray-cluster-worker -f Dockerfile.worker .
 
 RUN_MODE_ARGS="-d --name ray-worker-container"
 #RUN_MODE_ARGS="-it --rm"
 
-docker run --shm-size=$SHM -d  -v `cd ..;pwd`:/host $RUN_MODE_ARGS \
+docker run --shm-size=$SHM -v `cd ..;pwd`:/host $RUN_MODE_ARGS \
   -p 6381:6381 -p 6382:6382 \
   -p 10200-10700:10200-10700 \
-  ray-cluster-worker $HEAD_NODE_ADDRESS $REDIS_PASSWORD
+   ray-cluster-worker $HEAD_NODE_ADDRESS $REDIS_PASSWORD
 docker ps

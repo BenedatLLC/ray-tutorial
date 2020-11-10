@@ -1,0 +1,51 @@
+The command I used to start a container and run ray:
+docker run --shm-size=2G -v `cd ..;pwd`:/host -it --rm \
+  -p 6381:6381 -p 6382:6382 -p 10200-10700:10200-10700 \
+  rayproject/ray:latest ray start --address 192.168.1.9:6379 \
+   --node-ip-address 192.168.1.13 --block --verbose \
+   --node-manager-port 6381 --object-manager-port 6382 \
+   --min-worker-port 10200 --max-worker-port 10700 \
+   --redis-password=spitbol360
+
+
+Raylets fail with:
+F1109 15:35:21.935369   206   206 redis_context.cc:298] Could not establish connection to redis 172.17.0.3:48792 (context.err = 1)
+*** Check failure stack trace: ***
+    @     0x556306f8e9cd  google::LogMessage::Fail()
+    @     0x556306f8fb2c  google::LogMessage::SendToLog()
+    @     0x556306f8e6a9  google::LogMessage::Flush()
+    @     0x556306f8e8c1  google::LogMessage::~LogMessage()
+    @     0x556306f46ad9  ray::RayLog::~RayLog()
+    @     0x556306d5c435  ray::gcs::ConnectWithRetries<>()
+    @     0x556306d5d9d9  ray::gcs::RedisContext::Connect()
+    @     0x556306dc2b6f  ray::gcs::RedisClient::Connect()
+    @     0x556306dc39d1  ray::gcs::RedisClient::Connect()
+    @     0x556306d633ca  ray::gcs::RedisGcsClient::Connect()
+    @     0x556306cfc756  ray::gcs::ServiceBasedGcsClient::Connect()
+    @     0x556306bb18e3  main
+    @     0x7ff4f4c870b3  __libc_start_main
+    @     0x556306bc8bb1  (unknown)
+
+In services.py, line 1812:
+  print(f"calling start ray process, command = {repr(command)}")
+    process_info = start_ray_process(
+        command,
+        ray_constants.PROCESS_TYPE_RAYLET,
+        use_valgrind=use_valgrind,
+        use_gdb=False,
+        use_valgrind_profiler=use_profiler,
+        use_perftools_profiler=("RAYLET_PERFTOOLS_PATH" in os.environ),
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
+        fate_share=fate_share)
+
+The command was:
+calling start ray process, command = ['/root/anaconda3/lib/python3.7/site-packages/ray/core/src/ray/raylet/raylet', '--raylet_socket_name=/tmp/ray/session_2020-11-05_15-11-26_409484_6/sockets/raylet', '--store_socket_name=/tmp/ray/session_2020-11-05_15-11-26_409484_6/sockets/plasma_store', '--object_manager_port=6382', '--min_worker_port=10200', '--max_worker_port=10700', '--node_manager_port=6381', '--node_ip_address=192.168.1.13', '--redis_address=192.168.1.9', '--redis_port=6379', '--num_initial_workers=2', '--maximum_startup_concurrency=2', '--static_resource_list=node:192.168.1.13,1.0,CPU,2,memory,64,object_store_memory,19', '--config_list=plasma_store_as_thread,True', '--python_worker_command=/root/anaconda3/bin/python /root/anaconda3/lib/python3.7/site-packages/ray/workers/default_worker.py --node-ip-address=192.168.1.13 --node-manager-port=6381 --object-store-name=/tmp/ray/session_2020-11-05_15-11-26_409484_6/sockets/plasma_store --raylet-name=/tmp/ray/session_2020-11-05_15-11-26_409484_6/sockets/raylet --redis-address=192.168.1.9:6379 --config-list=plasma_store_as_thread,True --temp-dir=/tmp/ray --metrics-agent-port=55944 --redis-password=spitbol360', '--java_worker_command=', '--cpp_worker_command=', '--redis_password=spitbol360', '--temp_dir=/tmp/ray', '--session_dir=/tmp/ray/session_2020-11-05_15-11-26_409484_6', '--metrics-agent-port=55944', '--metrics_export_port=56766', '--object_store_memory=1452214272', '--plasma_directory=/dev/shm']
+
+Related issues
+--------------
+#8646 - Using Ray on two machines (with docker)
+#8033 - Trying to setup Ray on custom cluster using Docker
+#8648 - The worker node could not register node info successfully in VM
+  This was supposedly fixed by:
+  #10004 - [GCS] Improve fallback for getting local valid IP for GCS server

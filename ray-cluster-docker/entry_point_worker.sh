@@ -13,5 +13,5 @@ echo "starting ray worker, to connect to head node $HEAD_NODE_ADDRESS"
 ray start --address $HEAD_NODE_ADDRESS  --block --verbose \
   --node-manager-port 6381 --object-manager-port 6382 \
   --min-worker-port 10200 --max-worker-port 10700 \
-  --redis-address=$HEAD_NODE_ADDRESS:6379 \
   --redis-password=$REDIS_PASSWORD
+#  --redis-address=$HEAD_NODE_ADDRESS:6379 \
