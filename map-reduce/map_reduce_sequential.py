@@ -19,15 +19,34 @@ class ReadState(Enum):
     READING_BODY = 1
     READING_UNTIL_NEXT_TITLE = 2
 
+def line_reader(f, offset):
+    for i in range(4):
+        f.seek(offset+i)
+        try:
+            yield next(f)
+            break
+        except UnicodeDecodeError as e:
+            if i==3:
+                raise
+            else:
+                print(f"Got decode error {e} at offset {offset}, will try next byte")
+    for line in f:
+        yield line
 
+        
 def read_block(f, block_size, offset=0, verbose=False):
+    if verbose:
+        print(f"read_block({offset})")
     if offset!=0:
-        f.seek(offset)
+        reader = line_reader(f, offset)
+    else:
+        reader = f
     state = ReadState.INITIAL
     current_page = None
     references = set()
     chars_read = 0
-    for line in f:
+    first_line = True
+    for line in reader:
         chars_read += len(line)
         matches = RE.findall(line)
         for match in matches:
@@ -80,12 +99,15 @@ class Reducer:
     def __init__(self, verbose=False):
         self.verbose=verbose
         self.counts = Counter()
-        self.last_count = 0
+        self.reduce_calls = 0
+        self.reduce_calls_since_print = 0
     def reduce(self, other_counter):
         self.counts += other_counter
-        if self.verbose or (len(self.counts)-self.last_count)>50000:
-            print(f"Reducer: {len(self.counts)} total")
-        self.last_count = len(self.counts)
+        self.reduce_calls += 1
+        self.reduce_calls_since_print += 1
+        if self.verbose or self.reduce_calls_since_print>100:
+            print(f"Reducer: {self.reduce_calls} reductions, {len(self.counts)} pages")
+            self.reduce_calls_since_print = 0
     def __str__(self):
         return str({article:self.counts[article] for article in sorted(self.counts.keys())})
     def to_csv(self, filename):
