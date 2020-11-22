@@ -8,6 +8,7 @@ from math import ceil
 from collections import Counter
 import csv
 import time
+from typing import TextIO, Generator, Tuple, Set, Optional
 
 DEFAULT_BLOCK_SIZE = 4096
 
@@ -19,7 +20,7 @@ class ReadState(Enum):
     READING_BODY = 1
     READING_UNTIL_NEXT_TITLE = 2
 
-def line_reader(f, offset):
+def line_reader(f:TextIO, offset:int):
     for i in range(4):
         f.seek(offset+i)
         try:
@@ -34,7 +35,8 @@ def line_reader(f, offset):
         yield line
 
         
-def read_block(f, block_size, offset=0, verbose=False):
+def read_block(f:TextIO, block_size:int, offset:int=0, verbose:bool=False) \
+    -> Generator[Tuple[str, Set[str]], None, None]:
     if verbose:
         print(f"read_block({offset})")
     if offset!=0:
@@ -42,8 +44,8 @@ def read_block(f, block_size, offset=0, verbose=False):
     else:
         reader = f
     state = ReadState.INITIAL
-    current_page = None
-    references = set()
+    current_page :Optional[str] = None
+    references : Set[str] = set()
     chars_read = 0
     first_line = True
     for line in reader:
@@ -56,6 +58,7 @@ def read_block(f, block_size, offset=0, verbose=False):
                     current_page = new_page
                     state = ReadState.READING_BODY
                 elif state==ReadState.READING_BODY:
+                    assert current_page is not None
                     yield(current_page, references)
                     current_page = new_page
                     references = set()
@@ -63,6 +66,7 @@ def read_block(f, block_size, offset=0, verbose=False):
                     assert state==ReadState.READING_UNTIL_NEXT_TITLE
                     if verbose:
                         print(f"Hit next title {new_page}, yielding {current_page}")
+                    assert current_page is not None
                     yield (current_page, references)
                     return # we hit the first title of the next block
             else:
@@ -101,7 +105,7 @@ class Reducer:
         self.counts = Counter()
         self.reduce_calls = 0
         self.reduce_calls_since_print = 0
-    def reduce(self, other_counter):
+    def reduce(self, other_counter:Counter):
         self.counts += other_counter
         self.reduce_calls += 1
         self.reduce_calls_since_print += 1
@@ -110,7 +114,7 @@ class Reducer:
             self.reduce_calls_since_print = 0
     def __str__(self):
         return str({article:self.counts[article] for article in sorted(self.counts.keys())})
-    def to_csv(self, filename):
+    def to_csv(self, filename:str):
         print(f"Writing output to {filename}")
         with open(filename, 'w') as f:
             writer = csv.writer(f)
