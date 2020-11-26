@@ -119,7 +119,7 @@ class Reducer:
         with open(filename, 'w') as f:
             writer = csv.writer(f)
             writer.writerow(['page', 'incoming_references'])
-            for (page, cnt) in sorted(self.counts.items(), key=lambda item:(-item[1], item[0].lower())):
+            for (page, cnt) in sorted(self.counts.items(), key=lambda item:(-item[1], item[0])):
                 writer.writerow([page, cnt])
         print(f"Wrote {len(self.counts)} entries.")
 
