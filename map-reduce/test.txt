@@ -1,0 +1,45 @@
+This is a short test case for the implementations.
+Aticle1 should have one reference, Article2 should
+have two references, etc.
+
+======================================
+The output file should be as follows:
+page,incoming_references
+Article4,4
+Article3,3
+Article2,2
+Article1,1
+======================================
+
+<title>Article1</title>
+[[Article2]]
+
+
+[[Article3]]
+
+[[Article4]]
+
+<title>Article2</title>
+[[Article1]]
+
+[[Article3]]
+
+[[Article4]]
+
+<title>Article3</title>
+[[Article2]]
+
+[[Article4]]
+
+
+<title>Article4</title>
+
+[[Article3]]
+
+<title>Article5</title>
+
+[[Article4]]
+
+end!
+
+
