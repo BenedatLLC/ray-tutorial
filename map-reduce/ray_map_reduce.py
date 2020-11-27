@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""This program implements a parallel map-reduce-sort for
+building a sorted list of Wikipedia articles and their inbound
+reference counts. It uses a Ray actor class for each of these
+three stages of the pipeline. Each stage may have multiple workers,
+allowing the program to take advantage of all the cores available
+across a Ray cluster.
+"""
 import re
 import sys
 from enum import Enum
@@ -6,7 +14,6 @@ import os
 from os.path import abspath, expanduser, exists
 from math import ceil
 from collections import Counter
-import csv
 import time
 from typing import TextIO, Generator, Tuple, Set, Optional
 
@@ -16,6 +23,7 @@ import pandas as pd
 
 DEFAULT_BLOCK_SIZE = 4096
 
+# Regular expresssion to look for titles and references
 PATTERN=r'(?:<title>.+?</title>)|(?:\[\[.+?\]\])'
 RE=re.compile(PATTERN)
 
@@ -25,6 +33,15 @@ class ReadState(Enum):
     READING_UNTIL_NEXT_TITLE = 2
 
 def line_reader(f:TextIO, offset:int):
+    """This wraps the reading of lines for a block in the file.
+    It handles the first line differently -- we seek to the specified
+    start offset and try to read the line. Since we are starting
+    at, what is really a random byte in the file, we might be starting
+    at the middle of a UTF-8 character. Thus, if we get a decode error,
+    we advance again until we get to the end of the character and can read
+    the line. The higher level protocol implemented by read_block() ensures
+    that we won't ever miss an article.
+    """
     for i in range(4):
         f.seek(offset+i)
         try:
@@ -35,12 +52,22 @@ def line_reader(f:TextIO, offset:int):
                 raise
             else:
                 print(f"Got decode error {e} at offset {offset}, will try next byte")
+    # the rest of the lines are handled normally.
     for line in f:
         yield line
 
-        
+
 def read_block(f:TextIO, block_size:int, offset:int=0, verbose:bool=False) \
     -> Generator[Tuple[str, Set[str]], None, None]:
+    """We break the input file into "blocks", so that we can parallelize
+    the reading and processing of the file. Since a given reader might
+    start at an arbitrary point in the file, we read until we hit the first
+    <title> tag. Then, we read lines until we reach the the end of the block.
+    This will likely include mulitple articles in the dataset. At the end of the
+    block, we keep reading until we hit the first <title> of the next block.
+    This ensures that we get the full content of the last article in our
+    block.
+    """
     if verbose:
         print(f"read_block(offset={offset}, size={block_size})")
     if offset!=0:
@@ -101,6 +128,10 @@ def get_reducer(article:str, num_reducers:int) -> int:
 
 @ray.remote
 class Mapper:
+    """Each mapper is an actor that reads from a block of the input file, builds a
+    counter per reducer of article reference counts, and then periodically pushes
+    these to the reducers.
+    """
     def __init__(self, dump_file:str, reducers, articles_per_batch:int, verbose:bool=False):
         self.dump_file = dump_file
         assert exists(dump_file), f"Mapper did not find dump file {dump_file}. Is it on the same path for all nodes?"
@@ -143,6 +174,13 @@ class Mapper:
 
 @ray.remote
 class Reducer:
+    """Reducers receive batches of article counts from the mappers.
+    They just combine these to build up a single count. Due to the article
+    hashing, each reducer will have all the counts for a subset of the articles.
+    After the mapping is done, the coordinator will ask for the distribution from
+    one reducer. In the final phase, each reducer sends its articles in batches to
+    the sorters based on count ranges provided by the coordinator.
+    """
     def __init__(self, reducer_no, verbose=False):
         self.reducer_no = reducer_no
         self.verbose=verbose
@@ -159,6 +197,12 @@ class Reducer:
             self.reduce_calls_since_print = 0
 
     def get_count_distribution(self, num_sorters:int):
+        """Determine quantiles for the counts held by this reducer and
+        return an ordered list with the bounaries. This list is of length
+        num_sorters - 1, unless there are not enough unique counts for
+        that many buckets. In that cae, our approach returns just the
+        unique counts.
+        """
         counts = pd.Series(self.counts.values())
         return sorted(counts.quantile([i/num_sorters for i in range(1, num_sorters)]).unique())
 
@@ -191,6 +235,9 @@ class Reducer:
 
 @ray.remote
 class Sorter:
+    """Each sorter is sent articles with counts that fall within a specified range. When asked by the
+    coordinator, it returns a sorted dataframe of its articles and counts.
+    """
     def __init__(self, verbose=False):
         self.verbose = verbose
         self.count_dataframes = []
@@ -219,11 +266,12 @@ def main(argv=sys.argv[1:]):
     parser.add_argument('--num-sorters', default=1, type=int,
                         help="Number of sorter workers")
     parser.add_argument('--articles-per-mapper-batch', type=int, default=10,
-                        help="Number of articles to read from dump file in each mapper batch")
+                        help="Number of articles to read from dump file in each mapper batch, defaults to 1000")
     parser.add_argument('--verbose', action='store_true', default=False,
                         help="Is specified, print extra debugging")
     parser.add_argument("dump_file", metavar='DUMP_FILE', type=str,
-                        help="Name of file containing wikipedia dump")
+                        help="Name of file containing wikipedia dump. This must be in the same location across"+
+                             " all the nodes of the Ray cluster.")
     parser.add_argument('output_file', metavar='OUTPUT_FILE', type=str,
                         help="Name to use for output csv file")
     args = parser.parse_args(argv)
