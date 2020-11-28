@@ -210,7 +210,7 @@ class Reducer:
         self.counts += other_counter
         self.reduce_calls += 1
         self.reduce_calls_since_print += 1
-        if self.verbose or self.reduce_calls_since_print > 100:
+        if self.verbose or self.reduce_calls_since_print > 1000:
             print(
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
