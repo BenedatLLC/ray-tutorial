@@ -188,6 +188,7 @@ class Mapper:
                 ray.get(reduce_futures)
             print(f"Mapper[{offset}] completed")
 
+REDUCE_PRINT_FREQUENCY=1000
 
 @ray.remote
 class Reducer:
@@ -207,14 +208,13 @@ class Reducer:
         self.reduce_calls_since_print = 0
 
     def reduce(self, other_counter: Counter):
-        self.counts += other_counter
+        for (article, count) in other_counter.items():
+            self.counts[article] += count
         self.reduce_calls += 1
-        self.reduce_calls_since_print += 1
-        if self.verbose or self.reduce_calls_since_print > 1000:
+        if self.verbose or (self.reduce_calls%REDUCE_PRINT_FREQUENCY)==0:
             print(
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
-            self.reduce_calls_since_print = 0
 
     def get_count_distribution(self, num_sorters: int):
         """Determine quantiles for the counts held by this reducer and
