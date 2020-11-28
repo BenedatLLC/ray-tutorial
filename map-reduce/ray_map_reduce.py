@@ -151,7 +151,8 @@ class Mapper:
 
     def map(self, block_size, offset):
         reduce_futures = []
-        counters = [Counter() for c in range(len(self.reducers))]
+        num_reducers = len(self.reducers)
+        counters = [Counter() for c in range(num_reducers)]
 
         def send_batch(futures):
             if len(futures) > 0:
@@ -173,14 +174,14 @@ class Mapper:
                 f, block_size, offset, verbose=self.verbose
             ):
                 for ref_article in references:
-                    counters[get_reducer(ref_article, len(self.reducers))][
+                    counters[get_reducer(ref_article, num_reducers)][
                         ref_article
                     ] += 1
                 articles_in_batch += 1
                 if articles_in_batch == self.articles_per_batch:
                     reduce_futures = send_batch(reduce_futures)
                     articles_in_batch = 0
-                    counters = [Counter() for c in range(len(self.reducers))]
+                    counters = [Counter() for c in range(num_reducers)]
 
             if articles_in_batch > 0:
                 reduce_futures = send_batch(reduce_futures)
@@ -188,7 +189,7 @@ class Mapper:
                 ray.get(reduce_futures)
             print(f"Mapper[{offset}] completed")
 
-REDUCE_PRINT_FREQUENCY=1000
+REDUCE_PRINT_FREQUENCY=10000
 
 @ray.remote
 class Reducer:
@@ -305,7 +306,7 @@ def main(argv=sys.argv[1:]):
     parser.add_argument(
         "--articles-per-mapper-batch",
         type=int,
-        default=10,
+        default=1000,
         help="Number of articles to read from dump file in each mapper batch, defaults to 1000",
     )
     parser.add_argument(
