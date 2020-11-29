@@ -10,10 +10,18 @@ if [ "`which ray`" = "" ]; then
   exit 1
 fi
 
-if [ "$#" != "1" ]; then
-  echo "$0 REDIS_PASSWORD"
-  exit 1
+if [ "$#" = "1" ]; then
+  REDIS_PASSWORD=$1
+  DASHBOARD_OPT=""
+else
+  if [ "$#" = "2" ]; then
+    REDIS_PASSWORD=$1
+    DASHBOARD_OPT="--dashboard-host=$2"
+  else
+    echo "$0 REDIS_PASSWORD [DASHBOARD_HOST]"
+    exit 1
+  fi
 fi
 
 REDIS_PASSWORD=$1
-ray start --head --redis-password="$REDIS_PASSWORD"
+ray start --head --redis-password="$REDIS_PASSWORD" $DASHBOARD_OPT
