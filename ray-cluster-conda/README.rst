@@ -1,4 +1,11 @@
 
+To create the Conda environment::
+
+  conda env -f environment.yml
+
+Once the environment has been created, activate it via::
+
+  conda activate ray-cluster-conda
 
 If you get an error like::
 
