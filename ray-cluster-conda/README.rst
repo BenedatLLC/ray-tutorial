@@ -1,7 +1,7 @@
 
 To create the Conda environment::
 
-  conda env -f environment.yml
+  conda env create -f environment.yml
 
 Once the environment has been created, activate it via::
 
