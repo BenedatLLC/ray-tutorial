@@ -8,11 +8,10 @@ else
   echo "Using default shared memory size of $SHM"
 fi
 
-echo docker pull rayproject/ray
-docker pull rayproject/ray
+RAY_IMAGE=ray-ml # image containing most of the ML libraries you will need
 
-echo docker build -t ray-tutorial .
-docker build -t ray-tutorial .
+echo docker pull rayproject/$RAY_IMAGE
+docker pull rayproject/$RAY_IMAGE
 
-echo docker run --shm-size=$SHM -it --rm -v `cd ..;pwd`:/host ray-tutorial
-docker run --shm-size=$SHM -it --rm -v `cd ..;pwd`:/host ray-tutorial
+echo docker run --shm-size=$SHM -it --rm -v `cd ..;pwd`:/host rayproject/$RAY_IMAGE
+docker run --shm-size=$SHM -it --rm -v `cd ..;pwd`:/host rayproject/$RAY_IMAGE
