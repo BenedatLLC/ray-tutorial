@@ -27,7 +27,7 @@ def main(argv=sys.argv[1:]):
         parser.error(f"Script {script_path} is not in a subdirectory of {base_path}")
     path_in_container = join('/host', script_path[len(base_path)+1:])
     print(f"path_in container is {path_in_container}")
-    cmd = f"docker exec -it ray-head-container /root/anaconda3/bin/python {path_in_container}"
+    cmd = f"docker exec -it ray-head-container /home/ray/anaconda3/bin/python {path_in_container}"
     if len(script_args)>0:
         cmd += " " + ' '.join(script_args)
     print(f"Running command: {cmd}")
