@@ -1,11 +1,9 @@
-FROM rayproject/ray:nightly
-RUN apt-get -y -q update
-RUN apt-get -y -q install vim-tiny # for looking at files
-# install the packages we will need for our demos
-RUN conda install scikit-learn jupyter ipython
+FROM rayproject/ray-ml
+RUN sudo apt-get -y -q update
+RUN sudo apt-get -y -q install vim-tiny # for looking at files
 
 COPY ./entry_point_head.sh /entry_point_head.sh
-RUN chmod 755 /entry_point_head.sh
+RUN sudo chmod 755 /entry_point_head.sh
 
 VOLUME /host
 WORKDIR /host
