@@ -10,8 +10,8 @@ REDIS_PASSWORD=$2
 SHM=$3
 echo "Using shared memory size of $SHM"
 
-echo docker pull rayproject/ray:nightly
-docker pull rayproject/ray:nightly
+echo docker pull rayproject/ray-ml
+docker pull rayproject/ray-ml
 
 echo docker build -t ray-cluster-worker -f Dockerfile.worker .
 docker build -t ray-cluster-worker -f Dockerfile.worker .
