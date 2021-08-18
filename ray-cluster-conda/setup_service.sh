@@ -1,4 +1,7 @@
 #!/bin/bash
+# Setup a systemd service for Ray
+# Based on some ideas from
+# https://github.com/ray-project/ray/blob/master/doc/azure/azure-init.sh
 
 # exit if ray is already running
 systemctl is-active --quiet ray
