@@ -87,7 +87,8 @@ echo "  Startup command will be:"
 echo "    $SCRIPT_TO_RUN $REDIS_PASSWORD 0.0.0.0 --block"
 
 echo "  Writing configuration to ./ray.service.tmp"
-/bin/cat > ./ray.service.tmp << EOM
+if [[ "$HEAD_OR_WORKER" == "head" ]]; then
+  /bin/cat > ./ray.service.tmp << EOM
 [Unit]
    Description=Ray
 [Service]
@@ -97,9 +98,24 @@ echo "  Writing configuration to ./ray.service.tmp"
 [Install]
 WantedBy=multi-user.target
 EOM
+else
+  /bin/cat > ./ray.service.tmp << EOM
+[Unit]
+   Description=Ray
+[Service]
+   Type=simple
+   User=$USER
+   ExecStart=$SCRIPT_TO_RUN $MASTER_NODE $REDIS_PASSWORD --block
+[Install]
+WantedBy=multi-user.target
+EOM
+fi
 echo "  Moving configuration to /lib/systemd/system/ray.service"
 sudo mv ray.service.tmp /lib/systemd/system/ray.service
+echo "Contents of ray.service file"
+echo "============================"
 cat /lib/systemd/system/ray.service
+echo "============================"
 
 echo "  Enabling ray to start at boot"
 sudo systemctl enable ray
