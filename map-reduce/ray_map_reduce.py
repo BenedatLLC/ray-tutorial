@@ -139,8 +139,9 @@ class Mapper:
     """
 
     def __init__(
-        self, dump_file: str, reducers, articles_per_batch: int, verbose: bool = False
+            self, mapper_id: int, dump_file: str, reducers, articles_per_batch: int, verbose: bool = False
     ):
+        self.mapper_id = mapper_id
         self.dump_file = dump_file
         assert exists(
             dump_file
@@ -191,7 +192,41 @@ class Mapper:
                 reduce_futures = send_batch(reduce_futures)
             if len(reduce_futures) > 0:
                 ray.get(reduce_futures)
-            print(f"Mapper[{offset}] completed")
+            print(f"Mapper[{self.mapper_id}] completed")
+
+    def map_no_flow_control(self, block_size, offset):
+        num_reducers = len(self.reducers)
+        counters = [Counter() for c in range(num_reducers)]
+
+        def send_batch():
+            for (reducer, counter) in enumerate(counters):
+                if len(counter) > 0:
+                    self.reducers[reducer].reduce_no_flow_control.remote(self.mapper_id, counter)
+                    if self.verbose:
+                        print(
+                            f"Mapper[{offset}] send {len(counter)} to reducer {reducer}"
+                        )
+
+        with open(self.dump_file, "r") as f:
+            articles_in_batch = 0
+            for (article, references) in read_block(
+                f, block_size, offset, verbose=self.verbose
+            ):
+                for ref_article in references:
+                    counters[get_reducer(ref_article, num_reducers)][
+                        ref_article
+                    ] += 1
+                articles_in_batch += 1
+                if articles_in_batch == self.articles_per_batch:
+                    send_batch()
+                    articles_in_batch = 0
+                    counters = [Counter() for c in range(num_reducers)]
+
+            if articles_in_batch > 0:
+                send_batch()
+        final_futures = [reducer.end_of_reduce_calls.remote(self.mapper_id) for reducer in self.reducers]
+        ray.get(final_futures)
+        print(f"Mapper[{self.mapper_id}] completed")
 
 REDUCE_PRINT_FREQUENCY=10000
 
@@ -211,12 +246,15 @@ class Reducer:
         self.counts = Counter()
         self.reduce_calls = 0
         self.reduce_calls_since_print = 0
+        self.finished_mappers = set() # used in no flow control scenario
 
     def get_host(self):
         import socket
         return socket.gethostname()
 
+    @ray.method(num_returns=1)
     def reduce(self, other_counter: Counter):
+        """Version of reduce where the caller will wait for responses before sending the next batch"""
         for (article, count) in other_counter.items():
             self.counts[article] += count
         self.reduce_calls += 1
@@ -225,6 +263,25 @@ class Reducer:
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
 
+    @ray.method(num_returns=0)
+    def reduce_no_flow_control(self, mapper_id: int, other_counter: Counter):
+        """Version of reduce where the mapper will not wait for responses before sending the next
+        batch. The mapper should call end_of_reduce_calls() to tell this reducer that it is done."""
+        assert mapper_id not in self.finished_mappers
+        for (article, count) in other_counter.items():
+            self.counts[article] += count
+        self.reduce_calls += 1
+        if self.verbose or (self.reduce_calls%REDUCE_PRINT_FREQUENCY)==0:
+            print(
+                f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
+            )
+
+    @ray.method(num_returns=1)
+    def end_of_reduce_calls(self, mapper_id:int):
+        """Used to signal end of calls for no flow control case"""
+        assert mapper_id not in self.finished_mappers
+        self.finished_mappers.add(mapper_id)
+        return True
     def get_count_distribution(self, num_sorters: int):
         """Determine quantiles for the counts held by this reducer and
         return an ordered list with the bounaries. This list is of length
@@ -351,6 +408,12 @@ def main(argv=sys.argv[1:]):
         help="If specified, don't use placement groups"
     )
     parser.add_argument(
+        "--no-flow-control",
+        default=False,
+        action="store_true",
+        help="If specified, mappers will send all their reduce requests without waiting for responses."
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -389,27 +452,35 @@ def main(argv=sys.argv[1:]):
     ]
     mappers = [
         Mapper.options(placement_group=mpg).remote(
+            mapper_id,
             args.dump_file,
             reducers,
             args.articles_per_mapper_batch,
             verbose=args.verbose,
         )
-        for r in range(total_workers_per_stage)
+        for mapper_id in range(total_workers_per_stage)
     ]
     print(f"{len(mappers)} mappers, {len(reducers)} reducers")
     print(f"Mapper hosts: {get_hostnames(mappers)}")
     print(f"Reducer hosts: {get_hostnames(reducers)}")
     start = time.time()
-    mapper_futures = [
-        mapper.map.remote(block_size, block_size * block_no)
-        for (block_no, mapper) in enumerate(mappers)
-    ]
-    print(f"Started {total_workers_per_stage}, waiting for completion")
+    if args.no_flow_control:
+        mapper_futures = [
+            mapper.map_no_flow_control.remote(block_size, block_size * block_no)
+            for (block_no, mapper) in enumerate(mappers)
+        ]
+        print(f"Started {total_workers_per_stage} mappers with no flow control, waiting for completion")
+    else:
+        mapper_futures = [
+            mapper.map.remote(block_size, block_size * block_no)
+            for (block_no, mapper) in enumerate(mappers)
+        ]
+        print(f"Started {total_workers_per_stage} mappers, waiting for completion")
     ray.get(mapper_futures)
     print("Done with mapping")
     for mapper in mappers:
         ray.kill(mapper)
-    quantiles = ray.get(reducers[0].get_count_distribution.remote(4))
+    quantiles = ray.get(reducers[0].get_count_distribution.remote(total_workers_per_stage))
     sorters = [Sorter.options(placement_group=mpg).remote(verbose=args.verbose) for i in range(len(quantiles) + 1)]
     print(f"Sorter hosts: {get_hostnames(sorters)}")
     reducer_futures = [
