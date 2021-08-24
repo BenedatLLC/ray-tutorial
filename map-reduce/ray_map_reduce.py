@@ -148,6 +148,8 @@ class Mapper:
         self.reducers = reducers  # an array of reducers
         self.articles_per_batch = articles_per_batch
         self.verbose = verbose
+        import socket
+        print(f"Mapper on host {socket.gethostname()}")
 
     def map(self, block_size, offset):
         reduce_futures = []
@@ -207,6 +209,8 @@ class Reducer:
         self.counts = Counter()
         self.reduce_calls = 0
         self.reduce_calls_since_print = 0
+        import socket
+        print(f"Reducer on host {socket.gethostname()}")
 
     def reduce(self, other_counter: Counter):
         for (article, count) in other_counter.items():
@@ -292,7 +296,7 @@ def main(argv=sys.argv[1:]):
         help="Password to use for Redis, if non-default",
     )
     parser.add_argument(
-        "--address", default=None, type=str, help="Address for this Ray node"
+        "--address", default='auto', type=str, help="Address for this Ray node, defaults to 'auto'"
     )
     parser.add_argument(
         "--num-mappers", default=1, type=int, help="Number of mapper workers (defaults to 1)"
