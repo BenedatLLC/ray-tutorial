@@ -277,14 +277,6 @@ class Reducer:
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
 
-    # def _get_count_df(self):
-    #     if self.count_df is None:
-    #         self.count_df = pd.DataFrame(self.counts.items(), columns=["page", "incoming_references"])
-    #         self.count_df.sort_values(
-    #             by=["incoming_references", "page"], ascending=[False, True], inplace=True
-    #         )
-    #     return self.count_df
-
     @ray.method(num_returns=1)
     def end_of_reduce_calls(self, mapper_id:int):
         """Used to signal end of calls for no flow control case"""
@@ -299,7 +291,6 @@ class Reducer:
         that many buckets. In that cae, our approach returns just the
         unique counts.
         """
-        #counts = self._get_count_df()['incoming_references']
         counts = pd.Series(self.counts.values())
         return sorted(
             counts.quantile([i / num_sorters for i in range(1, num_sorters)]).unique()
@@ -309,12 +300,6 @@ class Reducer:
         assert len(sorters) == (
             len(sorter_limits) + 1
         ), f"There should be one more sorter than sorter limits, but got {len(sorters)} sorters and {len(sorter_limits)} limits"
-        # df = self._get_count_df()
-        # split_data = [
-        #     df[df['incoming_references']<limit]
-        #     for limit in sorter_limits
-        # ]
-        # split_data.append(df[df['incoming_references']>=sorter_limits[-1]])
 
         split_data = [
             {"page": [], "incoming_references": []} for i in range(len(sorters))
@@ -351,54 +336,39 @@ class Sorter:
     coordinator, it returns a sorted dataframe of its articles and counts.
     """
 
-    def __init__(self, verbose=False):
+    def __init__(self, num_reducers, verbose=False):
         self.verbose = verbose
+        self.num_reducers = num_reducers
         self.count_dataframes = []
+        self.sorted_dataframe = None
 
     def get_host(self):
         import socket
         return socket.gethostname()
 
     def accept_counts(self, data):
+        assert self.sorted_dataframe is None
         self.count_dataframes.append(data)
+        if len(self.count_dataframes)==self.num_reducers:
+            # we recevied the last count, do a sort now.
+            self.sorted_dataframe = pd.concat(self.count_dataframes)
+            self.count_dataframes = None # free up memory from individual dataframes
+            self.sorted_dataframe.sort_values(
+                by=["incoming_references", "page"], ascending=[False, True], inplace=True
+            )
+            self.sorted_dataframe.set_index("page", drop=True, inplace=True)
+            self.sorted_dataframe["incoming_references"] = self.sorted_dataframe["incoming_references"].astype(np.int32)
 
     def get_sorted_values(self):
-        df = pd.concat(self.count_dataframes)
-        df.sort_values(
-            by=["incoming_references", "page"], ascending=[False, True], inplace=True
-        )
-        df.set_index("page", drop=True, inplace=True)
-        df["incoming_references"] = df["incoming_references"].astype(np.int32)
-        return df
+        assert self.sorted_dataframe is not None
+        return self.sorted_dataframe
 
 
-def get_worker_count_and_placement_groups(skip_placement_groups):
-    """The size of an individual resource request is limited by the size of the smallest node in
-    the cluster. For example, if there are two nodes with 16 cpus and one node with 8 cpus, and you
-    request two nodes with 16 cpus, the request will block. Thus we find the size of the
-    smallest node in the cluster (ignoring any with 0 cpus) and divide that between the mapper
-    and reducer stages. For our example, we will get placement groups with 3 nodes of 4 cpus each.
+def get_workers_per_stage():
+    """We allocate one worker per stage per active CPU core that we find.
     """
     nodes = [node for node in ray.nodes() if node['Alive'] and 'CPU' in node['Resources'] and node['Resources']['CPU']>0]
-    smallest_cpus = min([node['Resources']['CPU'] for node in nodes])
-    #bundle_size = int(smallest_cpus/2)
-    bundle_size = int(smallest_cpus)
-    total_workers_per_stage = len(nodes)*bundle_size
-    if skip_placement_groups:
-        print(f"Will use {total_workers_per_stage} workers across {len(nodes)} nodes, skipping placement groups.")
-        return (total_workers_per_stage, None, None)
-    print(f"Each placement group will have {bundle_size} cpus times {len(nodes)} nodes for {total_workers_per_stage} total workers.")
-    mapper_bundle = [{'CPU':bundle_size} for node in nodes]
-    reducer_bundle = [{'CPU':bundle_size} for node in nodes]
-    print(f"Mapper placement group: {mapper_bundle}")
-    mpg = ray.util.placement_group(mapper_bundle, strategy='STRICT_SPREAD')
-    ray.get(mpg.ready())
-    print("  successfully obtained mapper group.")
-    print(f"Reducer placement group: {reducer_bundle}")
-    rpg = ray.util.placement_group(reducer_bundle, strategy='STRICT_SPREAD')
-    ray.get(rpg.ready())
-    print("  successfully obtained reducer group.")
-    return (total_workers_per_stage, mpg, rpg)
+    return sum([int(node['Resources']['CPU']) for node in nodes])
 
 def get_hostnames(actor_list):
     """Call the get_host() method on the list of actors and return the counts by host"""
@@ -418,20 +388,14 @@ def main(argv=sys.argv[1:]):
     parser.add_argument(
         "--articles-per-mapper-batch",
         type=int,
-        default=1000,
-        help="Number of articles to read from dump file in each mapper batch, defaults to 1000",
+        default=2000,
+        help="Number of articles to read from dump file in each mapper batch, defaults to 2000",
     )
     parser.add_argument(
-        "--skip-placement-groups",
+        "--flow-control",
         default=False,
         action="store_true",
-        help="If specified, don't use placement groups"
-    )
-    parser.add_argument(
-        "--no-flow-control",
-        default=False,
-        action="store_true",
-        help="If specified, mappers will send all their reduce requests without waiting for responses."
+        help="If specified, mappers will wait for reducers to acknowlege batches before continuing."
     )
     parser.add_argument(
         "--verbose",
@@ -461,17 +425,17 @@ def main(argv=sys.argv[1:]):
         ray.init(address=args.address, _redis_password=args.redis_password)
     else:
         ray.init(address=args.address)
-    (total_workers_per_stage, mpg, rpg) = get_worker_count_and_placement_groups(args.skip_placement_groups)
+    total_workers_per_stage = get_workers_per_stage()
     file_size = os.stat(args.dump_file).st_size
     block_size = int(ceil(file_size / total_workers_per_stage))
     print(
         f"File size is {file_size}, which will yield {total_workers_per_stage} blocks of size {block_size}"
     )
     reducers = [
-        Reducer.options(placement_group=rpg).remote(r, verbose=args.verbose) for r in range(total_workers_per_stage)
+        Reducer.remote(r, verbose=args.verbose) for r in range(total_workers_per_stage)
     ]
     mappers = [
-        Mapper.options(placement_group=mpg).remote(
+        Mapper.remote(
             mapper_id,
             args.dump_file,
             reducers,
@@ -484,7 +448,7 @@ def main(argv=sys.argv[1:]):
     print(f"Mapper hosts: {get_hostnames(mappers)}")
     print(f"Reducer hosts: {get_hostnames(reducers)}")
     start = time.time()
-    if args.no_flow_control:
+    if not args.flow_control:
         mapper_futures = [
             mapper.map_no_flow_control.remote(block_size, block_size * block_no)
             for (block_no, mapper) in enumerate(mappers)
@@ -499,16 +463,19 @@ def main(argv=sys.argv[1:]):
     ray.get(mapper_futures)
     print("Done with mapping")
     mappers = None # make mappers go out of scope
-    num_sorters = min(8, total_workers_per_stage)
+    num_sorters = max(1, int(round(total_workers_per_stage/2)))
+    print(f"Will request {num_sorters} sorters")
     quantiles = ray.get(reducers[0].get_count_distribution.remote(num_sorters))
-    sorters = [Sorter.options(placement_group=mpg).remote(verbose=args.verbose) for i in range(len(quantiles) + 1)]
+    sorters = [Sorter.remote(num_reducers=total_workers_per_stage,
+                             verbose=args.verbose)
+               for i in range(len(quantiles) + 1)]
     print(f"Sorter hosts: {get_hostnames(sorters)}")
     sort_send_start_time = time.time()
     reducer_futures = [
         reducer.send_to_sorters.remote(sorters, quantiles) for reducer in reducers
     ]
     ray.get(reducer_futures)
-    print(f"Done with sending to sorters (took {int(round(time.time()-sort_send_start_time))} seconds)")
+    print(f"Done with sorting (took {int(round(time.time()-sort_send_start_time))} seconds)")
     reducers = None # make reducers go out of scope
     print("Writing to file")
     write_header = True
