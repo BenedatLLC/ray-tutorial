@@ -244,6 +244,7 @@ class Reducer:
         self.reducer_no = reducer_no
         self.verbose = verbose
         self.counts = Counter()
+        #self.count_df = None
         self.reduce_calls = 0
         self.reduce_calls_since_print = 0
         self.finished_mappers = set() # used in no flow control scenario
@@ -276,12 +277,21 @@ class Reducer:
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
 
+    # def _get_count_df(self):
+    #     if self.count_df is None:
+    #         self.count_df = pd.DataFrame(self.counts.items(), columns=["page", "incoming_references"])
+    #         self.count_df.sort_values(
+    #             by=["incoming_references", "page"], ascending=[False, True], inplace=True
+    #         )
+    #     return self.count_df
+
     @ray.method(num_returns=1)
     def end_of_reduce_calls(self, mapper_id:int):
         """Used to signal end of calls for no flow control case"""
         assert mapper_id not in self.finished_mappers
         self.finished_mappers.add(mapper_id)
         return True
+
     def get_count_distribution(self, num_sorters: int):
         """Determine quantiles for the counts held by this reducer and
         return an ordered list with the bounaries. This list is of length
@@ -289,6 +299,7 @@ class Reducer:
         that many buckets. In that cae, our approach returns just the
         unique counts.
         """
+        #counts = self._get_count_df()['incoming_references']
         counts = pd.Series(self.counts.values())
         return sorted(
             counts.quantile([i / num_sorters for i in range(1, num_sorters)]).unique()
@@ -298,6 +309,13 @@ class Reducer:
         assert len(sorters) == (
             len(sorter_limits) + 1
         ), f"There should be one more sorter than sorter limits, but got {len(sorters)} sorters and {len(sorter_limits)} limits"
+        # df = self._get_count_df()
+        # split_data = [
+        #     df[df['incoming_references']<limit]
+        #     for limit in sorter_limits
+        # ]
+        # split_data.append(df[df['incoming_references']>=sorter_limits[-1]])
+
         split_data = [
             {"page": [], "incoming_references": []} for i in range(len(sorters))
         ]
@@ -316,6 +334,7 @@ class Reducer:
 
         futures = [
             sorter.accept_counts.remote(pd.DataFrame(split_data[sorter_no]))
+            #sorter.accept_counts.remote(split_data[sorter_no])
             for (sorter_no, sorter) in enumerate(sorters)
         ]
         ray.get(futures)  # wait for the sends to complete
@@ -360,9 +379,10 @@ def get_worker_count_and_placement_groups(skip_placement_groups):
     smallest node in the cluster (ignoring any with 0 cpus) and divide that between the mapper
     and reducer stages. For our example, we will get placement groups with 3 nodes of 4 cpus each.
     """
-    nodes = [node for node in ray.nodes() if node['Alive'] and node['Resources']['CPU']>0]
+    nodes = [node for node in ray.nodes() if node['Alive'] and 'CPU' in node['Resources'] and node['Resources']['CPU']>0]
     smallest_cpus = min([node['Resources']['CPU'] for node in nodes])
-    bundle_size = int(smallest_cpus/2)
+    #bundle_size = int(smallest_cpus/2)
+    bundle_size = int(smallest_cpus)
     total_workers_per_stage = len(nodes)*bundle_size
     if skip_placement_groups:
         print(f"Will use {total_workers_per_stage} workers across {len(nodes)} nodes, skipping placement groups.")
@@ -478,21 +498,22 @@ def main(argv=sys.argv[1:]):
         print(f"Started {total_workers_per_stage} mappers, waiting for completion")
     ray.get(mapper_futures)
     print("Done with mapping")
-    for mapper in mappers:
-        ray.kill(mapper)
-    quantiles = ray.get(reducers[0].get_count_distribution.remote(total_workers_per_stage))
+    mappers = None # make mappers go out of scope
+    num_sorters = min(8, total_workers_per_stage)
+    quantiles = ray.get(reducers[0].get_count_distribution.remote(num_sorters))
     sorters = [Sorter.options(placement_group=mpg).remote(verbose=args.verbose) for i in range(len(quantiles) + 1)]
     print(f"Sorter hosts: {get_hostnames(sorters)}")
+    sort_send_start_time = time.time()
     reducer_futures = [
         reducer.send_to_sorters.remote(sorters, quantiles) for reducer in reducers
     ]
     ray.get(reducer_futures)
-    print("Done with sending to sorters")
-    for reducer in reducers:
-        ray.kill(reducer)
+    print(f"Done with sending to sorters (took {int(round(time.time()-sort_send_start_time))} seconds)")
+    reducers = None # make reducers go out of scope
     print("Writing to file")
     write_header = True
     total_rows = 0
+    write_start_time = time.time()
     for sorter_no in range(len(sorters) - 1, -1, -1):
         df = ray.get(sorters[sorter_no].get_sorted_values.remote())
         df.to_csv(
@@ -500,7 +521,7 @@ def main(argv=sys.argv[1:]):
         )
         write_header = False
         total_rows += len(df)
-    print(f"Wrote {total_rows} rows to {args.output_file}")
+    print(f"Wrote {total_rows} rows to {args.output_file} in {int(round(time.time()-write_start_time))} seconds")
 
     end = time.time()
     elapsed = end - start
