@@ -229,11 +229,17 @@ class Reducer:
                         counts[article] += count
             futures = remaining_futures
         print(f"Reducer[{self.reducer_no}] has completed map calls.")
-        
-        return pd.DataFrame(counts.items(), columns=["page", "incoming_references"])
+
+        df = pd.DataFrame(counts.items(), columns=["page", "incoming_references"])
+        df["incoming_references"] = df["incoming_references"].astype(np.int32)
+        df.sort_values(
+            by=["incoming_references", "page"], ascending=[False, True], inplace=True
+        )
+        return df
+        # return pd.DataFrame(counts.items(), columns=["page", "incoming_references"])
 
 
-@ray.remote
+#@ray.remote
 def sort(mappers, reducers, pct_pending_requests) -> pd.DataFrame:
     import socket
     print(f"Sorter is on host {socket.gethostname()}")
@@ -251,11 +257,12 @@ def sort(mappers, reducers, pct_pending_requests) -> pd.DataFrame:
     print("All reducers have completed, starting sort...")
     sort_start = time.time()
     df = pd.concat(data_frames)
+    data_framees = None
     df.sort_values(
         by=["incoming_references", "page"], ascending=[False, True], inplace=True
     )
     df.set_index("page", drop=True, inplace=True)
-    df["incoming_references"] = df["incoming_references"].astype(np.int32)
+    #df["incoming_references"] = df["incoming_references"].astype(np.int32)
     print(f"Sort completed in {int(round(time.time()-sort_start))} seconds")
     return df
 
@@ -264,12 +271,13 @@ def get_worker_count_and_placement_groups(skip_placement_groups):
     """The size of an individual resource request is limited by the size of the smallest node in
     the cluster. For example, if there are two nodes with 16 cpus and one node with 8 cpus, and you
     request two nodes with 16 cpus, the request will block. Thus we find the size of the
-    smallest node in the cluster (ignoring any with 0 cpus) and divide that between the mapper
-    and reducer stages. For our example, we will get placement groups with 3 nodes of 4 cpus each.
+    smallest node in the cluster (ignoring any with 0 cpus). We use the same placement group for
+    mappers and reducers. If skip_placement_groups is True, then we just 
     """
     nodes = [node for node in ray.nodes() if node['Alive'] and 'CPU' in node['Resources'] and node['Resources']['CPU']>0]
     total_cpus = sum([int(node['Resources']['CPU']) for node in nodes])
-    return (total_cpus, None, None)
+    if skip_placement_groups:
+        return (total_cpus, None, None)
     smallest_cpus = int(min([node['Resources']['CPU'] for node in nodes]))
     total_workers_per_stage = smallest_cpus*len(nodes)
     bundle = [{'CPU':smallest_cpus} for node in nodes]
@@ -279,23 +287,6 @@ def get_worker_count_and_placement_groups(skip_placement_groups):
     print(f" obtained placement group: {ray.util.placement_group_table(pg)}")
     return (total_workers_per_stage, pg, pg)
 
-    bundle_size = int(smallest_cpus/2)
-    total_workers_per_stage = len(nodes)*bundle_size
-    if skip_placement_groups:
-        print(f"Will use {total_workers_per_stage} workers across {len(nodes)} nodes, skipping placement groups.")
-        return (total_workers_per_stage, None, None)
-    print(f"Each placement group will have {bundle_size} cpus times {len(nodes)} nodes for {total_workers_per_stage} total workers.")
-    mapper_bundle = [{'CPU':bundle_size} for node in nodes]
-    reducer_bundle = [{'CPU':bundle_size} for node in nodes]
-    print(f"Mapper placement group: {mapper_bundle}")
-    mpg = ray.util.placement_group(mapper_bundle, strategy='STRICT_SPREAD')
-    ray.get(mpg.ready())
-    print("  successfully obtained mapper group.")
-    print(f"Reducer placement group: {reducer_bundle}")
-    rpg = ray.util.placement_group(reducer_bundle, strategy='STRICT_SPREAD')
-    ray.get(rpg.ready())
-    print("  successfully obtained reducer group.")
-    return (total_workers_per_stage, mpg, rpg)
 
 def get_hostnames(actor_list):
     """Call the get_host() method on the list of actors and return the counts by host"""
@@ -382,9 +373,12 @@ def main(argv=sys.argv[1:]):
     print(f"Reducer hosts: {get_hostnames(reducers)}")
 
     start = time.time()
-    sorter_future = sort.remote(mappers, reducers, args.pct_pending_requests)
-    print("Called sorter, waiting for completion")
-    df = ray.get(sorter_future)
+
+    df = sort(mappers, reducers, args.pct_pending_requests)
+    #sorter_future = sort.remote(mappers, reducers, args.pct_pending_requests)
+    #print("Called sorter, waiting for completion")
+    #df = ray.get(sorter_future)
+
     start_write = time.time()
     df.to_csv(
         args.output_file, header=True, mode="w"
