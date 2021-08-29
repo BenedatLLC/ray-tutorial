@@ -141,8 +141,13 @@ class Mapper:
     """
 
     def __init__(
-            self, mapper_id:int, dump_file: str, offset:int, block_size:int, num_reducers:int,
-            verbose: bool = False
+        self,
+        mapper_id: int,
+        dump_file: str,
+        offset: int,
+        block_size: int,
+        num_reducers: int,
+        verbose: bool = False,
     ):
         self.mapper_id = mapper_id
         assert exists(
@@ -152,29 +157,33 @@ class Mapper:
         self.block_size = block_size
         self.offset = offset
         self.num_reducers = num_reducers
-        self.counters = None # type: Optional[List[Optional[Counter]]]
+        self.counters = None  # type: Optional[List[Optional[Counter]]]
         self.verbose = verbose
 
     def get_host(self):
         import socket
+
         return socket.gethostname()
 
-    def map(self, reducer_no:int) -> Counter:
+    def map(self, reducer_no: int) -> Counter:
         if self.counters is not None:
             # have already retrieved the data
             counter = self.counters[reducer_no]
             assert counter is not None
             self.counters[reducer_no] = None
             return counter
-        else: # need to read from the file
+        else:  # need to read from the file
             self.counters = [Counter() for c in range(self.num_reducers)]
 
-            with open(self.dump_file, 'r') as f:
-                for (article, references) in read_block(f, self.block_size, self.offset, verbose=self.verbose):
+            with open(self.dump_file, "r") as f:
+                for (article, references) in read_block(
+                    f, self.block_size, self.offset, verbose=self.verbose
+                ):
                     for ref_article in references:
-                        cast(Counter, self.counters[get_reducer(ref_article, self.num_reducers)])[
-                            ref_article
-                        ] += 1
+                        cast(
+                            Counter,
+                            self.counters[get_reducer(ref_article, self.num_reducers)],
+                        )[ref_article] += 1
 
             print(f"Mapper {self.mapper_id} completed read of wiki data")
             # now, return the counter for the requesting reducer
@@ -184,18 +193,20 @@ class Mapper:
             return counter
 
 
-REDUCE_PRINT_FREQUENCY=10000
+REDUCE_PRINT_FREQUENCY = 10000
+
 
 def get_num_returns(futures, fraction):
     """given a list of futures and the value for"""
     num_futures = len(futures)
     if fraction is None:
         return 1
-    elif fraction==100:
+    elif fraction == 100:
         return num_futures
     else:
-        nr = int(round(fraction/100*len(futures)))
+        nr = int(round(fraction / 100 * len(futures)))
         return min(max(nr, 1), num_futures)
+
 
 @ray.remote(num_cpus=0.5)
 class Reducer:
@@ -205,6 +216,7 @@ class Reducer:
     for. Once it has all the data from the mappers, it converts the counter to a data
     frame and sorts it before returning.
     """
+
     def __init__(self, reducer_no, pct_pending_requests, verbose=False):
         self.reducer_no = reducer_no
         self.pct_pending_requests = pct_pending_requests
@@ -212,23 +224,20 @@ class Reducer:
 
     def get_host(self):
         import socket
+
         return socket.gethostname()
 
     def reduce(self, mappers) -> pd.DataFrame:
-        counts = Counter() # type: Counter
-        futures = [
-            mapper.map.remote(self.reducer_no)
-            for mapper in mappers
-        ]
-        while len(futures)>0:
+        counts = Counter()  # type: Counter
+        futures = [mapper.map.remote(self.reducer_no) for mapper in mappers]
+        while len(futures) > 0:
             ready_futures, remaining_futures = ray.wait(
-                futures,
-                num_returns=get_num_returns(futures, self.pct_pending_requests)
+                futures, num_returns=get_num_returns(futures, self.pct_pending_requests)
             )
             for future in ready_futures:
                 counter = ray.get(future)
                 for (article, count) in counter.items():
-                        counts[article] += count
+                    counts[article] += count
             futures = remaining_futures
         print(f"Reducer[{self.reducer_no}] has completed map calls.")
 
@@ -241,19 +250,18 @@ class Reducer:
 
 
 def sort(mappers, reducers, pct_pending_requests) -> pd.DataFrame:
-    """We run a single sort function on the driver node that requests dataframes from each of the reducers. 
+    """We run a single sort function on the driver node that requests dataframes from each of the reducers.
     It then merges the dataframes and performs a global sort.
     """
     import socket
+
     print(f"Sorter is on host {socket.gethostname()}")
-    futures = [
-        reducer.reduce.remote(mappers)
-        for reducer in reducers
-    ]
-    data_frames = [] # type: Optional[List[pd.DataFrame]]
-    while len(futures)>0:
-        ready_futures, remaining_futures = ray.wait(futures,
-                                                    num_returns=get_num_returns(futures, pct_pending_requests))
+    futures = [reducer.reduce.remote(mappers) for reducer in reducers]
+    data_frames = []  # type: Optional[List[pd.DataFrame]]
+    while len(futures) > 0:
+        ready_futures, remaining_futures = ray.wait(
+            futures, num_returns=get_num_returns(futures, pct_pending_requests)
+        )
         for future in ready_futures:
             cast(List[pd.DataFrame], data_frames).append(ray.get(future))
         futures = remaining_futures
@@ -265,15 +273,16 @@ def sort(mappers, reducers, pct_pending_requests) -> pd.DataFrame:
         by=["incoming_references", "page"], ascending=[False, True], inplace=True
     )
     df.set_index("page", drop=True, inplace=True)
-    #df["incoming_references"] = df["incoming_references"].astype(np.int32)
+    # df["incoming_references"] = df["incoming_references"].astype(np.int32)
     print(f"Sort completed in {int(round(time.time()-sort_start))} seconds")
     return df
 
+
 class PlacementInfo(NamedTuple):
-    num_worker_nodes : int
-    total_workers_per_stage : int
-    mapper_placement_group : Optional[PlacementGroup]
-    reducer_placement_group : Optional[PlacementGroup]
+    num_worker_nodes: int
+    total_workers_per_stage: int
+    mapper_placement_group: Optional[PlacementGroup]
+    reducer_placement_group: Optional[PlacementGroup]
 
 
 def get_worker_count_and_placement_groups(skip_placement_groups) -> PlacementInfo:
@@ -281,18 +290,22 @@ def get_worker_count_and_placement_groups(skip_placement_groups) -> PlacementInf
     the cluster. For example, if there are two nodes with 16 cpus and one node with 8 cpus, and you
     request two nodes with 16 cpus, the request will block. Thus we find the size of the
     smallest node in the cluster (ignoring any with 0 cpus). We use the same placement group for
-    mappers and reducers. If skip_placement_groups is True, then we just 
+    mappers and reducers. If skip_placement_groups is True, then we just
     """
-    nodes = [node for node in ray.nodes() if node['Alive'] and 'CPU' in node['Resources'] and node['Resources']['CPU']>0]
-    total_cpus = sum([int(node['Resources']['CPU']) for node in nodes])
+    nodes = [
+        node
+        for node in ray.nodes()
+        if node["Alive"] and "CPU" in node["Resources"] and node["Resources"]["CPU"] > 0
+    ]
+    total_cpus = sum([int(node["Resources"]["CPU"]) for node in nodes])
     if skip_placement_groups:
         return PlacementInfo(len(nodes), total_cpus, None, None)
-    smallest_cpus = int(min([node['Resources']['CPU'] for node in nodes]))
-    total_workers_per_stage = int(smallest_cpus*len(nodes))
-    bundle = [{'CPU':smallest_cpus} for node in nodes]
+    smallest_cpus = int(min([node["Resources"]["CPU"] for node in nodes]))
+    total_workers_per_stage = int(smallest_cpus * len(nodes))
+    bundle = [{"CPU": smallest_cpus} for node in nodes]
     print(f"Placement group: {bundle}")
-    pg = ray.util.placement_group(bundle, strategy='STRICT_SPREAD')
-    ray.get(pg.ready());
+    pg = ray.util.placement_group(bundle, strategy="STRICT_SPREAD")
+    ray.get(pg.ready())
     print(f" obtained placement group: {ray.util.placement_group_table(pg)}")
     return PlacementInfo(len(nodes), total_workers_per_stage, pg, pg)
 
@@ -310,19 +323,22 @@ def main(argv=sys.argv[1:]):
         help="Password to use for Redis, if non-default",
     )
     parser.add_argument(
-        "--address", default='auto', type=str, help="Address for this Ray node, defaults to 'auto'"
+        "--address",
+        default="auto",
+        type=str,
+        help="Address for this Ray node, defaults to 'auto'",
     )
     parser.add_argument(
         "--skip-placement-groups",
         default=False,
         action="store_true",
-        help="If specified, don't use placement groups"
+        help="If specified, don't use placement groups",
     )
     parser.add_argument(
         "--pct-pending-requests",
         type=int,
         default=50,
-        help="Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will wait for 50% of the outstanding requests"
+        help="Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will wait for 50% of the outstanding requests",
     )
     parser.add_argument(
         "--verbose",
@@ -359,11 +375,13 @@ def main(argv=sys.argv[1:]):
         f"File size is {file_size}, which will yield {placement.total_workers_per_stage} blocks of size {block_size}"
     )
     mappers = [
-        Mapper.options(placement_group=placement.mapper_placement_group,
-                       placement_group_bundle_index=mapper_id%placement.num_worker_nodes).remote(
+        Mapper.options(
+            placement_group=placement.mapper_placement_group,
+            placement_group_bundle_index=mapper_id % placement.num_worker_nodes,
+        ).remote(
             mapper_id,
             args.dump_file,
-            mapper_id*block_size,
+            mapper_id * block_size,
             block_size,
             placement.total_workers_per_stage,
             verbose=args.verbose,
@@ -371,11 +389,11 @@ def main(argv=sys.argv[1:]):
         for mapper_id in range(placement.total_workers_per_stage)
     ]
     reducers = [
-        Reducer.options(placement_group=placement.reducer_placement_group,
-                        placement_group_bundle_index=r%placement.num_worker_nodes).remote(
-            r,
-            pct_pending_requests=args.pct_pending_requests,
-            verbose=args.verbose
+        Reducer.options(
+            placement_group=placement.reducer_placement_group,
+            placement_group_bundle_index=r % placement.num_worker_nodes,
+        ).remote(
+            r, pct_pending_requests=args.pct_pending_requests, verbose=args.verbose
         )
         for r in range(placement.total_workers_per_stage)
     ]
@@ -386,15 +404,15 @@ def main(argv=sys.argv[1:]):
     start = time.time()
 
     df = sort(mappers, reducers, args.pct_pending_requests)
-    #sorter_future = sort.remote(mappers, reducers, args.pct_pending_requests)
-    #print("Called sorter, waiting for completion")
-    #df = ray.get(sorter_future)
+    # sorter_future = sort.remote(mappers, reducers, args.pct_pending_requests)
+    # print("Called sorter, waiting for completion")
+    # df = ray.get(sorter_future)
 
     start_write = time.time()
-    df.to_csv(
-        args.output_file, header=True, mode="w"
+    df.to_csv(args.output_file, header=True, mode="w")
+    print(
+        f"Wrote {len(df)} rows to {args.output_file} in {int(round(time.time()-start_write, 1))} seconds"
     )
-    print(f"Wrote {len(df)} rows to {args.output_file} in {int(round(time.time()-start_write, 1))} seconds")
 
     end = time.time()
     elapsed = end - start
