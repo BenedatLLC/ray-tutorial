@@ -15,9 +15,10 @@ from os.path import abspath, expanduser, exists
 from math import ceil
 from collections import Counter
 import time
-from typing import TextIO, Generator, Tuple, Set, Optional
+from typing import TextIO, Generator, Tuple, Set, Optional, NamedTuple
 
 import ray
+from ray.util.placement_group import PlacementGroup
 import numpy as np
 import pandas as pd
 
@@ -131,7 +132,7 @@ def get_reducer(article: str, num_reducers: int) -> int:
     return (sum([ord(s) for s in article]) + len(article)) % num_reducers
 
 
-@ray.remote
+@ray.remote(num_cpus=0.5)
 class Mapper:
     """Each mapper is an actor that reads from a block of the input file, builds a
     counter per reducer of article reference counts, and then periodically pushes
@@ -230,7 +231,7 @@ class Mapper:
 
 REDUCE_PRINT_FREQUENCY=10000
 
-@ray.remote
+@ray.remote(num_cpus=0.5)
 class Reducer:
     """Reducers receive batches of article counts from the mappers.
     They just combine these to build up a single count. Due to the article
@@ -330,7 +331,7 @@ class Reducer:
         )
 
 
-@ray.remote
+@ray.remote(num_cpus=0.5)
 class Sorter:
     """Each sorter is sent articles with counts that fall within a specified range. When asked by the
     coordinator, it returns a sorted dataframe of its articles and counts.
@@ -364,11 +365,36 @@ class Sorter:
         return self.sorted_dataframe
 
 
-def get_workers_per_stage():
-    """We allocate one worker per stage per active CPU core that we find.
+class PlacementInfo(NamedTuple):
+    num_worker_nodes: int
+    total_workers_per_stage: int
+    mapper_placement_group: Optional[PlacementGroup]
+    reducer_placement_group: Optional[PlacementGroup]
+
+
+def get_worker_count_and_placement_groups(skip_placement_groups) -> PlacementInfo:
+    """The size of an individual resource request is limited by the size of the smallest node in
+    the cluster. For example, if there are two nodes with 16 cpus and one node with 8 cpus, and you
+    request two nodes with 16 cpus, the request will block. Thus we find the size of the
+    smallest node in the cluster (ignoring any with 0 cpus). We use the same placement group for
+    mappers and reducers. If skip_placement_groups is True, then we just
     """
-    nodes = [node for node in ray.nodes() if node['Alive'] and 'CPU' in node['Resources'] and node['Resources']['CPU']>0]
-    return sum([int(node['Resources']['CPU']) for node in nodes])
+    nodes = [
+        node
+        for node in ray.nodes()
+        if node["Alive"] and "CPU" in node["Resources"] and node["Resources"]["CPU"] > 0
+    ]
+    total_cpus = sum([int(node["Resources"]["CPU"]) for node in nodes])
+    if skip_placement_groups:
+        return PlacementInfo(len(nodes), total_cpus, None, None)
+    smallest_cpus = int(min([node["Resources"]["CPU"] for node in nodes]))
+    total_workers_per_stage = int(smallest_cpus * len(nodes))
+    bundle = [{"CPU": smallest_cpus} for node in nodes]
+    print(f"Placement group: {bundle}")
+    pg = ray.util.placement_group(bundle, strategy="STRICT_SPREAD")
+    ray.get(pg.ready())
+    print(f" obtained placement group: {ray.util.placement_group_table(pg)}")
+    return PlacementInfo(len(nodes), total_workers_per_stage, pg, pg)
 
 def get_hostnames(actor_list):
     """Call the get_host() method on the list of actors and return the counts by host"""
@@ -398,6 +424,12 @@ def main(argv=sys.argv[1:]):
         help="If specified, mappers will wait for reducers to acknowlege batches before continuing."
     )
     parser.add_argument(
+        "--skip-placement-groups",
+        default=False,
+        action="store_true",
+        help="If specified, don't use placement groups",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -425,24 +457,30 @@ def main(argv=sys.argv[1:]):
         ray.init(address=args.address, _redis_password=args.redis_password)
     else:
         ray.init(address=args.address)
-    total_workers_per_stage = get_workers_per_stage()
+    placement = get_worker_count_and_placement_groups(args.skip_placement_groups)
     file_size = os.stat(args.dump_file).st_size
-    block_size = int(ceil(file_size / total_workers_per_stage))
+    block_size = int(ceil(file_size / placement.total_workers_per_stage))
     print(
-        f"File size is {file_size}, which will yield {total_workers_per_stage} blocks of size {block_size}"
+        f"File size is {file_size}, which will yield {placement.total_workers_per_stage} blocks of size {block_size}"
     )
     reducers = [
-        Reducer.remote(r, verbose=args.verbose) for r in range(total_workers_per_stage)
+        Reducer.options(
+            placement_group=placement.reducer_placement_group,
+            placement_group_bundle_index=r % placement.num_worker_nodes,
+        ).remote(r, verbose=args.verbose) for r in range(placement.total_workers_per_stage)
     ]
     mappers = [
-        Mapper.remote(
+        Mapper.options(
+            placement_group=placement.mapper_placement_group,
+            placement_group_bundle_index=mapper_id % placement.num_worker_nodes,
+        ).remote(
             mapper_id,
             args.dump_file,
             reducers,
             args.articles_per_mapper_batch,
             verbose=args.verbose,
         )
-        for mapper_id in range(total_workers_per_stage)
+        for mapper_id in range(placement.total_workers_per_stage)
     ]
     print(f"{len(mappers)} mappers, {len(reducers)} reducers")
     print(f"Mapper hosts: {get_hostnames(mappers)}")
@@ -453,21 +491,24 @@ def main(argv=sys.argv[1:]):
             mapper.map_no_flow_control.remote(block_size, block_size * block_no)
             for (block_no, mapper) in enumerate(mappers)
         ]
-        print(f"Started {total_workers_per_stage} mappers with no flow control, waiting for completion")
+        print(f"Started {placement.total_workers_per_stage} mappers with no flow control, waiting for completion")
     else:
         mapper_futures = [
             mapper.map.remote(block_size, block_size * block_no)
             for (block_no, mapper) in enumerate(mappers)
         ]
-        print(f"Started {total_workers_per_stage} mappers, waiting for completion")
+        print(f"Started {placement.total_workers_per_stage} mappers, waiting for completion")
     ray.get(mapper_futures)
     print("Done with mapping")
     mappers = None # make mappers go out of scope
-    num_sorters = max(1, int(round(total_workers_per_stage/2)))
+    num_sorters = max(1, int(round(placement.total_workers_per_stage/2)))
     print(f"Will request {num_sorters} sorters")
     quantiles = ray.get(reducers[0].get_count_distribution.remote(num_sorters))
-    sorters = [Sorter.remote(num_reducers=total_workers_per_stage,
-                             verbose=args.verbose)
+    sorters = [Sorter.options(
+                 placement_group=placement.mapper_placement_group,
+                 placement_group_bundle_index=i % placement.num_worker_nodes,
+               ).remote(num_reducers=placement.total_workers_per_stage,
+                        verbose=args.verbose)
                for i in range(len(quantiles) + 1)]
     print(f"Sorter hosts: {get_hostnames(sorters)}")
     sort_send_start_time = time.time()
