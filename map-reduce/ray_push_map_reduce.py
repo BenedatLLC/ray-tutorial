@@ -140,7 +140,12 @@ class Mapper:
     """
 
     def __init__(
-            self, mapper_id: int, dump_file: str, reducers, articles_per_batch: int, verbose: bool = False
+        self,
+        mapper_id: int,
+        dump_file: str,
+        reducers,
+        articles_per_batch: int,
+        verbose: bool = False,
     ):
         self.mapper_id = mapper_id
         self.dump_file = dump_file
@@ -153,6 +158,7 @@ class Mapper:
 
     def get_host(self):
         import socket
+
         return socket.gethostname()
 
     def map(self, block_size, offset):
@@ -180,9 +186,7 @@ class Mapper:
                 f, block_size, offset, verbose=self.verbose
             ):
                 for ref_article in references:
-                    counters[get_reducer(ref_article, num_reducers)][
-                        ref_article
-                    ] += 1
+                    counters[get_reducer(ref_article, num_reducers)][ref_article] += 1
                 articles_in_batch += 1
                 if articles_in_batch == self.articles_per_batch:
                     reduce_futures = send_batch(reduce_futures)
@@ -202,7 +206,9 @@ class Mapper:
         def send_batch():
             for (reducer, counter) in enumerate(counters):
                 if len(counter) > 0:
-                    self.reducers[reducer].reduce_no_flow_control.remote(self.mapper_id, counter)
+                    self.reducers[reducer].reduce_no_flow_control.remote(
+                        self.mapper_id, counter
+                    )
                     if self.verbose:
                         print(
                             f"Mapper[{offset}] send {len(counter)} to reducer {reducer}"
@@ -214,9 +220,7 @@ class Mapper:
                 f, block_size, offset, verbose=self.verbose
             ):
                 for ref_article in references:
-                    counters[get_reducer(ref_article, num_reducers)][
-                        ref_article
-                    ] += 1
+                    counters[get_reducer(ref_article, num_reducers)][ref_article] += 1
                 articles_in_batch += 1
                 if articles_in_batch == self.articles_per_batch:
                     send_batch()
@@ -225,11 +229,16 @@ class Mapper:
 
             if articles_in_batch > 0:
                 send_batch()
-        final_futures = [reducer.end_of_reduce_calls.remote(self.mapper_id) for reducer in self.reducers]
+        final_futures = [
+            reducer.end_of_reduce_calls.remote(self.mapper_id)
+            for reducer in self.reducers
+        ]
         ray.get(final_futures)
         print(f"Mapper[{self.mapper_id}] completed")
 
-REDUCE_PRINT_FREQUENCY=10000
+
+REDUCE_PRINT_FREQUENCY = 10000
+
 
 @ray.remote(num_cpus=0.5)
 class Reducer:
@@ -245,13 +254,14 @@ class Reducer:
         self.reducer_no = reducer_no
         self.verbose = verbose
         self.counts = Counter()
-        #self.count_df = None
+        # self.count_df = None
         self.reduce_calls = 0
         self.reduce_calls_since_print = 0
-        self.finished_mappers = set() # used in no flow control scenario
+        self.finished_mappers = set()  # used in no flow control scenario
 
     def get_host(self):
         import socket
+
         return socket.gethostname()
 
     @ray.method(num_returns=1)
@@ -260,7 +270,7 @@ class Reducer:
         for (article, count) in other_counter.items():
             self.counts[article] += count
         self.reduce_calls += 1
-        if self.verbose or (self.reduce_calls%REDUCE_PRINT_FREQUENCY)==0:
+        if self.verbose or (self.reduce_calls % REDUCE_PRINT_FREQUENCY) == 0:
             print(
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
@@ -273,13 +283,13 @@ class Reducer:
         for (article, count) in other_counter.items():
             self.counts[article] += count
         self.reduce_calls += 1
-        if self.verbose or (self.reduce_calls%REDUCE_PRINT_FREQUENCY)==0:
+        if self.verbose or (self.reduce_calls % REDUCE_PRINT_FREQUENCY) == 0:
             print(
                 f"Reducer[{self.reducer_no}]: {self.reduce_calls} reductions, {len(self.counts)} pages"
             )
 
     @ray.method(num_returns=1)
-    def end_of_reduce_calls(self, mapper_id:int):
+    def end_of_reduce_calls(self, mapper_id: int):
         """Used to signal end of calls for no flow control case"""
         assert mapper_id not in self.finished_mappers
         self.finished_mappers.add(mapper_id)
@@ -320,7 +330,7 @@ class Reducer:
 
         futures = [
             sorter.accept_counts.remote(pd.DataFrame(split_data[sorter_no]))
-            #sorter.accept_counts.remote(split_data[sorter_no])
+            # sorter.accept_counts.remote(split_data[sorter_no])
             for (sorter_no, sorter) in enumerate(sorters)
         ]
         ray.get(futures)  # wait for the sends to complete
@@ -345,20 +355,25 @@ class Sorter:
 
     def get_host(self):
         import socket
+
         return socket.gethostname()
 
     def accept_counts(self, data):
         assert self.sorted_dataframe is None
         self.count_dataframes.append(data)
-        if len(self.count_dataframes)==self.num_reducers:
+        if len(self.count_dataframes) == self.num_reducers:
             # we recevied the last count, do a sort now.
             self.sorted_dataframe = pd.concat(self.count_dataframes)
-            self.count_dataframes = None # free up memory from individual dataframes
+            self.count_dataframes = None  # free up memory from individual dataframes
             self.sorted_dataframe.sort_values(
-                by=["incoming_references", "page"], ascending=[False, True], inplace=True
+                by=["incoming_references", "page"],
+                ascending=[False, True],
+                inplace=True,
             )
             self.sorted_dataframe.set_index("page", drop=True, inplace=True)
-            self.sorted_dataframe["incoming_references"] = self.sorted_dataframe["incoming_references"].astype(np.int32)
+            self.sorted_dataframe["incoming_references"] = self.sorted_dataframe[
+                "incoming_references"
+            ].astype(np.int32)
 
     def get_sorted_values(self):
         assert self.sorted_dataframe is not None
@@ -396,6 +411,7 @@ def get_worker_count_and_placement_groups(skip_placement_groups) -> PlacementInf
     print(f" obtained placement group: {ray.util.placement_group_table(pg)}")
     return PlacementInfo(len(nodes), total_workers_per_stage, pg, pg)
 
+
 def get_hostnames(actor_list):
     """Call the get_host() method on the list of actors and return the counts by host"""
     return Counter(ray.get([actor.get_host.remote() for actor in actor_list]))
@@ -409,7 +425,10 @@ def main(argv=sys.argv[1:]):
         help="Password to use for Redis, if non-default",
     )
     parser.add_argument(
-        "--address", default='auto', type=str, help="Address for this Ray node, defaults to 'auto'"
+        "--address",
+        default="auto",
+        type=str,
+        help="Address for this Ray node, defaults to 'auto'",
     )
     parser.add_argument(
         "--articles-per-mapper-batch",
@@ -421,7 +440,7 @@ def main(argv=sys.argv[1:]):
         "--flow-control",
         default=False,
         action="store_true",
-        help="If specified, mappers will wait for reducers to acknowlege batches before continuing."
+        help="If specified, mappers will wait for reducers to acknowlege batches before continuing.",
     )
     parser.add_argument(
         "--skip-placement-groups",
@@ -467,7 +486,8 @@ def main(argv=sys.argv[1:]):
         Reducer.options(
             placement_group=placement.reducer_placement_group,
             placement_group_bundle_index=r % placement.num_worker_nodes,
-        ).remote(r, verbose=args.verbose) for r in range(placement.total_workers_per_stage)
+        ).remote(r, verbose=args.verbose)
+        for r in range(placement.total_workers_per_stage)
     ]
     mappers = [
         Mapper.options(
@@ -491,33 +511,40 @@ def main(argv=sys.argv[1:]):
             mapper.map_no_flow_control.remote(block_size, block_size * block_no)
             for (block_no, mapper) in enumerate(mappers)
         ]
-        print(f"Started {placement.total_workers_per_stage} mappers with no flow control, waiting for completion")
+        print(
+            f"Started {placement.total_workers_per_stage} mappers with no flow control, waiting for completion"
+        )
     else:
         mapper_futures = [
             mapper.map.remote(block_size, block_size * block_no)
             for (block_no, mapper) in enumerate(mappers)
         ]
-        print(f"Started {placement.total_workers_per_stage} mappers, waiting for completion")
+        print(
+            f"Started {placement.total_workers_per_stage} mappers, waiting for completion"
+        )
     ray.get(mapper_futures)
     print("Done with mapping")
-    mappers = None # make mappers go out of scope
-    num_sorters = max(1, int(round(placement.total_workers_per_stage/2)))
+    mappers = None  # make mappers go out of scope
+    num_sorters = max(1, int(round(placement.total_workers_per_stage / 2)))
     print(f"Will request {num_sorters} sorters")
     quantiles = ray.get(reducers[0].get_count_distribution.remote(num_sorters))
-    sorters = [Sorter.options(
-                 placement_group=placement.mapper_placement_group,
-                 placement_group_bundle_index=i % placement.num_worker_nodes,
-               ).remote(num_reducers=placement.total_workers_per_stage,
-                        verbose=args.verbose)
-               for i in range(len(quantiles) + 1)]
+    sorters = [
+        Sorter.options(
+            placement_group=placement.mapper_placement_group,
+            placement_group_bundle_index=i % placement.num_worker_nodes,
+        ).remote(num_reducers=placement.total_workers_per_stage, verbose=args.verbose)
+        for i in range(len(quantiles) + 1)
+    ]
     print(f"Sorter hosts: {get_hostnames(sorters)}")
     sort_send_start_time = time.time()
     reducer_futures = [
         reducer.send_to_sorters.remote(sorters, quantiles) for reducer in reducers
     ]
     ray.get(reducer_futures)
-    print(f"Done with sorting (took {int(round(time.time()-sort_send_start_time))} seconds)")
-    reducers = None # make reducers go out of scope
+    print(
+        f"Done with sorting (took {int(round(time.time()-sort_send_start_time))} seconds)"
+    )
+    reducers = None  # make reducers go out of scope
     print("Writing to file")
     write_header = True
     total_rows = 0
@@ -529,7 +556,9 @@ def main(argv=sys.argv[1:]):
         )
         write_header = False
         total_rows += len(df)
-    print(f"Wrote {total_rows} rows to {args.output_file} in {int(round(time.time()-write_start_time))} seconds")
+    print(
+        f"Wrote {total_rows} rows to {args.output_file} in {int(round(time.time()-write_start_time))} seconds"
+    )
 
     end = time.time()
     elapsed = end - start
