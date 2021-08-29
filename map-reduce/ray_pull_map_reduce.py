@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """This program implements a parallel map-reduce-sort for
 building a sorted list of Wikipedia articles and their inbound
-reference counts. It uses a Ray actor class for each of these
-three stages of the pipeline. Each stage may have multiple workers,
+reference counts. It uses a Ray actor class for mappers and reducers.
+The sort is done in the driver program. Mappers and reducers may have
+multiple workers,
 allowing the program to take advantage of all the cores available
 across a Ray cluster.
 """
@@ -15,9 +16,10 @@ from os.path import abspath, expanduser, exists
 from math import ceil
 from collections import Counter
 import time
-from typing import TextIO, Generator, Tuple, Set, Optional
+from typing import TextIO, Generator, Tuple, Set, Optional, NamedTuple, List, cast
 
 import ray
+from ray.util.placement_group import PlacementGroup
 import numpy as np
 import pandas as pd
 
@@ -131,11 +133,11 @@ def get_reducer(article: str, num_reducers: int) -> int:
     return (sum([ord(s) for s in article]) + len(article)) % num_reducers
 
 
-@ray.remote
+@ray.remote(num_cpus=0.5)
 class Mapper:
-    """Each mapper is an actor that reads from a block of the input file, builds a
-    counter per reducer of article reference counts, and then periodically pushes
-    these to the reducers.
+    """Each mapper is an actor that waits for a map request. Upon the first map request,
+    it reads the entire file and updates a counter for each reducer. These are cached in
+    the mapper and then returned based on the reducer requesting the data.
     """
 
     def __init__(
@@ -150,14 +152,14 @@ class Mapper:
         self.block_size = block_size
         self.offset = offset
         self.num_reducers = num_reducers
-        self.counters = None #[Counter() for r in range(num_reducers)]
+        self.counters = None # type: Optional[List[Optional[Counter]]]
         self.verbose = verbose
 
     def get_host(self):
         import socket
         return socket.gethostname()
 
-    def map(self, reducer_no) -> Counter:
+    def map(self, reducer_no:int) -> Counter:
         if self.counters is not None:
             # have already retrieved the data
             counter = self.counters[reducer_no]
@@ -170,13 +172,14 @@ class Mapper:
             with open(self.dump_file, 'r') as f:
                 for (article, references) in read_block(f, self.block_size, self.offset, verbose=self.verbose):
                     for ref_article in references:
-                        self.counters[get_reducer(ref_article, self.num_reducers)][
+                        cast(Counter, self.counters[get_reducer(ref_article, self.num_reducers)])[
                             ref_article
                         ] += 1
 
             print(f"Mapper {self.mapper_id} completed read of wiki data")
             # now, return the counter for the requesting reducer
             counter = self.counters[reducer_no]
+            assert counter is not None
             self.counters[reducer_no] = None
             return counter
 
@@ -194,14 +197,13 @@ def get_num_returns(futures, fraction):
         nr = int(round(fraction/100*len(futures)))
         return min(max(nr, 1), num_futures)
 
-@ray.remote
+@ray.remote(num_cpus=0.5)
 class Reducer:
-    """Reducers receive batches of article counts from the mappers.
-    They just combine these to build up a single count. Due to the article
-    hashing, each reducer will have all the counts for a subset of the articles.
-    After the mapping is done, the coordinator will ask for the distribution from
-    one reducer. In the final phase, each reducer sends its articles in batches to
-    the sorters based on count ranges provided by the coordinator.
+    """Reducers request article counts from each of the mappers. A hash algorithm
+    ensures that a given article is only mapped to a specific reducer. Thus, the
+    reducer can compute the counts for the subset of wikipedia that it is responsible
+    for. Once it has all the data from the mappers, it converts the counter to a data
+    frame and sorts it before returning.
     """
     def __init__(self, reducer_no, pct_pending_requests, verbose=False):
         self.reducer_no = reducer_no
@@ -213,7 +215,7 @@ class Reducer:
         return socket.gethostname()
 
     def reduce(self, mappers) -> pd.DataFrame:
-        counts = Counter()
+        counts = Counter() # type: Counter
         futures = [
             mapper.map.remote(self.reducer_no)
             for mapper in mappers
@@ -236,28 +238,29 @@ class Reducer:
             by=["incoming_references", "page"], ascending=[False, True], inplace=True
         )
         return df
-        # return pd.DataFrame(counts.items(), columns=["page", "incoming_references"])
 
 
-#@ray.remote
 def sort(mappers, reducers, pct_pending_requests) -> pd.DataFrame:
+    """We run a single sort function on the driver node that requests dataframes from each of the reducers. 
+    It then merges the dataframes and performs a global sort.
+    """
     import socket
     print(f"Sorter is on host {socket.gethostname()}")
     futures = [
         reducer.reduce.remote(mappers)
         for reducer in reducers
     ]
-    data_frames = []
+    data_frames = [] # type: Optional[List[pd.DataFrame]]
     while len(futures)>0:
         ready_futures, remaining_futures = ray.wait(futures,
                                                     num_returns=get_num_returns(futures, pct_pending_requests))
         for future in ready_futures:
-            data_frames.append(ray.get(future))
+            cast(List[pd.DataFrame], data_frames).append(ray.get(future))
         futures = remaining_futures
     print("All reducers have completed, starting sort...")
     sort_start = time.time()
     df = pd.concat(data_frames)
-    data_framees = None
+    data_frames = None
     df.sort_values(
         by=["incoming_references", "page"], ascending=[False, True], inplace=True
     )
@@ -266,8 +269,14 @@ def sort(mappers, reducers, pct_pending_requests) -> pd.DataFrame:
     print(f"Sort completed in {int(round(time.time()-sort_start))} seconds")
     return df
 
+class PlacementInfo(NamedTuple):
+    num_worker_nodes : int
+    total_workers_per_stage : int
+    mapper_placement_group : Optional[PlacementGroup]
+    reducer_placement_group : Optional[PlacementGroup]
 
-def get_worker_count_and_placement_groups(skip_placement_groups):
+
+def get_worker_count_and_placement_groups(skip_placement_groups) -> PlacementInfo:
     """The size of an individual resource request is limited by the size of the smallest node in
     the cluster. For example, if there are two nodes with 16 cpus and one node with 8 cpus, and you
     request two nodes with 16 cpus, the request will block. Thus we find the size of the
@@ -277,15 +286,15 @@ def get_worker_count_and_placement_groups(skip_placement_groups):
     nodes = [node for node in ray.nodes() if node['Alive'] and 'CPU' in node['Resources'] and node['Resources']['CPU']>0]
     total_cpus = sum([int(node['Resources']['CPU']) for node in nodes])
     if skip_placement_groups:
-        return (total_cpus, None, None)
+        return PlacementInfo(len(nodes), total_cpus, None, None)
     smallest_cpus = int(min([node['Resources']['CPU'] for node in nodes]))
-    total_workers_per_stage = smallest_cpus*len(nodes)
+    total_workers_per_stage = int(smallest_cpus*len(nodes))
     bundle = [{'CPU':smallest_cpus} for node in nodes]
     print(f"Placement group: {bundle}")
     pg = ray.util.placement_group(bundle, strategy='STRICT_SPREAD')
     ray.get(pg.ready());
     print(f" obtained placement group: {ray.util.placement_group_table(pg)}")
-    return (total_workers_per_stage, pg, pg)
+    return PlacementInfo(len(nodes), total_workers_per_stage, pg, pg)
 
 
 def get_hostnames(actor_list):
@@ -312,8 +321,8 @@ def main(argv=sys.argv[1:]):
     parser.add_argument(
         "--pct-pending-requests",
         type=int,
-        default=None,
-        help="Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will wait for one at a time"
+        default=50,
+        help="Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will wait for 50% of the outstanding requests"
     )
     parser.add_argument(
         "--verbose",
@@ -343,30 +352,32 @@ def main(argv=sys.argv[1:]):
         ray.init(address=args.address, _redis_password=args.redis_password)
     else:
         ray.init(address=args.address)
-    (total_workers_per_stage, mpg, rpg) = get_worker_count_and_placement_groups(args.skip_placement_groups)
+    placement = get_worker_count_and_placement_groups(args.skip_placement_groups)
     file_size = os.stat(args.dump_file).st_size
-    block_size = int(ceil(file_size / total_workers_per_stage))
+    block_size = int(ceil(file_size / placement.total_workers_per_stage))
     print(
-        f"File size is {file_size}, which will yield {total_workers_per_stage} blocks of size {block_size}"
+        f"File size is {file_size}, which will yield {placement.total_workers_per_stage} blocks of size {block_size}"
     )
     mappers = [
-        Mapper.options(placement_group=mpg).remote(
+        Mapper.options(placement_group=placement.mapper_placement_group,
+                       placement_group_bundle_index=mapper_id%placement.num_worker_nodes).remote(
             mapper_id,
             args.dump_file,
             mapper_id*block_size,
             block_size,
-            total_workers_per_stage,
+            placement.total_workers_per_stage,
             verbose=args.verbose,
         )
-        for mapper_id in range(total_workers_per_stage)
+        for mapper_id in range(placement.total_workers_per_stage)
     ]
     reducers = [
-        Reducer.options(placement_group=rpg).remote(
+        Reducer.options(placement_group=placement.reducer_placement_group,
+                        placement_group_bundle_index=r%placement.num_worker_nodes).remote(
             r,
             pct_pending_requests=args.pct_pending_requests,
             verbose=args.verbose
         )
-        for r in range(total_workers_per_stage)
+        for r in range(placement.total_workers_per_stage)
     ]
     print(f"{len(mappers)} mappers, {len(reducers)} reducers")
     print(f"Mapper hosts: {get_hostnames(mappers)}")
