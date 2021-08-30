@@ -338,7 +338,7 @@ def main(argv=sys.argv[1:]):
         "--pct-pending-requests",
         type=int,
         default=50,
-        help="Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will wait for 50% of the outstanding requests",
+        help="Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will wait for 50 percent of the outstanding requests",
     )
     parser.add_argument(
         "--verbose",
@@ -377,7 +377,9 @@ def main(argv=sys.argv[1:]):
     mappers = [
         Mapper.options(
             placement_group=placement.mapper_placement_group,
-            placement_group_bundle_index=mapper_id % placement.num_worker_nodes,
+            placement_group_bundle_index=mapper_id % placement.num_worker_nodes
+            if not args.skip_placement_groups
+            else -1,
         ).remote(
             mapper_id,
             args.dump_file,
@@ -391,7 +393,9 @@ def main(argv=sys.argv[1:]):
     reducers = [
         Reducer.options(
             placement_group=placement.reducer_placement_group,
-            placement_group_bundle_index=r % placement.num_worker_nodes,
+            placement_group_bundle_index=r % placement.num_worker_nodes
+            if not args.skip_placement_groups
+            else -1,
         ).remote(
             r, pct_pending_requests=args.pct_pending_requests, verbose=args.verbose
         )

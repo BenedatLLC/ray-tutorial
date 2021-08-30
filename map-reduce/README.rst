@@ -2,12 +2,22 @@
 Map Reduce Example
 ==================
 
-Here, we have two implementaitons of a map-reduce-sort for building a
+Here, we have three implementaitons of a map-reduce-sort for building a
 list of all the articles in Wikipedia with their incoming reference counts,
-sorted by the most refences and then by article title.
-One implementation, ``sequential_map_reduce.py`` is purely sequential, while
-the other implementation, ``ray_map_reduce.py`` uses Ray actors to parallel
-the workflow.
+sorted by the most refences and then by article title. The three implementations are:
+
+1. ``sequential_map_reduce.py`` is purely sequential and does not use Ray
+2. ``ray_pull_map_reduce.py`` is a parallel Ray implementation where a single sorter
+   calls multiple reducers, requesting data. Each reducer calls multiple mappers,
+   requesting data. Thus, the data is "pulled" along the pipelne.
+3. ``ray_push_map_reduce.py`` is a parallel Ray implementation with multiple mappers,
+   reducers, and sorters. The mappers start by reading the input file and make repeated
+   calls to the reducers to "push" their data. The reducers then send their results to the
+   sorters.
+
+``ray_push_map_reduce.py`` is a little faster than ``ray_pull_map_reduce.py`` (about 6% in
+my runs) and has lower maximum memory consumption. However, the code of the push design is more complex,
+and took 579 lines of code, versus 428 lines for the pull version.
 
 Downloading a Wikipedia dump
 ============================
@@ -40,45 +50,100 @@ Here is an example that puts the output in the file reference_counts.csv::
 
   python3 seuential_map_reduce.py enwiki-latest-pages-articles.xml reference_counts.csv
 
-Parallel Implementation
+Ray Pull Implementation
 -----------------------
-The parallel implementation has additional options to control how to connect to Ray,
-the number of workers for each stage of the pipleline, and the batch size of the mapper.
-Note that the Wikipedia dump file is expected to be in the same path on all machines of
-the Ray cluster. This can be accomplished by copying the file to all the nodes or by using
-a shared filesystem (e.g. NFS).
+The parallel implementation using the pull architecture requires the input Wikipedia dump file and
+output file as positional arguments. The dump file is required to be in the same path on all machines
+in the Ray cluster. This can be accomplished by copying the file to all nodes or by using a shared
+filesystem (NFS). There are also a number of options related to configuring the
+usage of Ray. Here is the full usage::
 
-Here is the full useage::
 
-  ray_map_reduce.py [-h] [--redis-password REDIS_PASSWORD] [--address ADDRESS] \
-                    [--num-mappers NUM_MAPPERS] [--num-reducers NUM_REDUCERS] \
-                    [--num-sorters NUM_SORTERS] [--articles-per-mapper-batch ARTICLES_PER_MAPPER_BATCH] \
-                    [--verbose] DUMP_FILE OUTPUT_FILE
+  ray_pull_map_reduce.py [-h] [--redis-password REDIS_PASSWORD] [--address ADDRESS] [--skip-placement-groups]
+                                [--pct-pending-requests PCT_PENDING_REQUESTS] [--verbose]
+                                DUMP_FILE OUTPUT_FILE
   
   positional arguments:
-    DUMP_FILE             Name of file containing wikipedia dump. This must be in the same location across all the nodes of the Ray cluster.
+    DUMP_FILE             Name of file containing wikipedia dump. This must be in the same location across all the nodes of the Ray
+                          cluster.
     OUTPUT_FILE           Name to use for output csv file
   
   optional arguments:
-    -h, --help            show help message and exit
+    -h, --help            show this help message and exit
     --redis-password REDIS_PASSWORD
                           Password to use for Redis, if non-default
-    --address ADDRESS     Address for this Ray node
-    --num-mappers NUM_MAPPERS
-                          Number of mapper workers (defaults to 1)
-    --num-reducers NUM_REDUCERS
-                          Number of reducer workers (defaults to 1)
-    --num-sorters NUM_SORTERS
-                          Number of sorter workers (defaults to 1)
-    --articles-per-mapper-batch ARTICLES_PER_MAPPER_BATCH
-                          Number of articles to read from dump file in each mapper batch, defaults to 1000
+    --address ADDRESS     Address for this Ray node, defaults to 'auto'
+    --skip-placement-groups
+                          If specified, don't use placement groups
+    --pct-pending-requests PCT_PENDING_REQUESTS
+                          Fraction of pending requests to wait for, as a percentage of outstanding requests. If not specified, will
+                          wait for 50 percent of the outstanding requests
     --verbose             Is specified, print extra debugging
 
 Example
 ~~~~~~~
 Start a new instance of Ray on this node and run with two workers for each pipeline stage::
 
-   python3 ray_map_reduce.py --num-mappers=2 --num-reducers=2 --num-sorters=2 enwiki-latest-page-articles.xml reference_counts.xml
+   python3 ray_pull_map_reduce.py --num-mappers=2 --num-reducers=2 --num-sorters=2 enwiki-latest-page-articles.xml reference_counts.txt
+
+Ray Push Implementation
+-----------------------
+Here is the full usage::
+
+  ray_push_map_reduce.py [-h] [--redis-password REDIS_PASSWORD] [--address ADDRESS]
+                                [--articles-per-mapper-batch ARTICLES_PER_MAPPER_BATCH] [--flow-control] [--skip-placement-groups]
+                                [--verbose]
+                                DUMP_FILE OUTPUT_FILE
+  
+  positional arguments:
+    DUMP_FILE             Name of file containing wikipedia dump. This must be in the same location across all the nodes of the Ray
+                          cluster.
+    OUTPUT_FILE           Name to use for output csv file
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --redis-password REDIS_PASSWORD
+                          Password to use for Redis, if non-default
+    --address ADDRESS     Address for this Ray node, defaults to 'auto'
+    --articles-per-mapper-batch ARTICLES_PER_MAPPER_BATCH
+                          Number of articles to read from dump file in each mapper batch, defaults to 2000
+    --flow-control        If specified, mappers will wait for reducers to acknowlege batches before continuing.
+    --skip-placement-groups
+                          If specified, don't use placement groups
+    --verbose             Is specified, print extra debugging
+
+    
+Performance Tests
+=================
+To evaluate the map-reduce implementations, I ran them on a 3 node cluster:
+
++----------+-----------+--------+------ ----+
+| Node     | CPU Cores | Memory | Storage   |
++==========+===========+========+===========+
+| Driver   |        8  |  32 GB | Hard disk |
++----------+-----------+--------+------ ----+
+| Worker 1 |       16  |  64 GB | NVMe SSD  |
++----------+-----------+--------+------ ----+
+| Worker 2 |       16  |  64 GB | NVMe SSD  |
++----------+-----------+--------+------ ----+
+
+Here are the results:
+
++----------------+---------+----------+---------+-------------+
+| Implementation | Mappers | Reducers | Sorters | Runtime (s) |
++================+=========+==========+=========+=============+
+|    Sequential  |      1  |        1 |       1 |       1,059 |
++----------------+---------+----------+---------+-------------+
+|    Parallel    |      1  |        1 |       1 |       1,996 |
++----------------+---------+----------+---------+-------------+
+|    Parallel    |     10  |       10 |      10 |         302 |
++----------------+---------+----------+---------+-------------+
+|    Parallel    |     20  |       10 |      10 |         740 |
++----------------+---------+----------+---------+-------------+
+|    Parallel    |     20  |       20 |      20 |       1,022 |
++----------------+---------+----------+---------+-------------+
+
+
 
 
 Implementation

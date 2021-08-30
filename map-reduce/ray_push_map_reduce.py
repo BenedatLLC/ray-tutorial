@@ -485,14 +485,18 @@ def main(argv=sys.argv[1:]):
     reducers = [
         Reducer.options(
             placement_group=placement.reducer_placement_group,
-            placement_group_bundle_index=r % placement.num_worker_nodes,
+            placement_group_bundle_index=r % placement.num_worker_nodes
+            if not args.skip_placement_groups
+            else -1,
         ).remote(r, verbose=args.verbose)
         for r in range(placement.total_workers_per_stage)
     ]
     mappers = [
         Mapper.options(
             placement_group=placement.mapper_placement_group,
-            placement_group_bundle_index=mapper_id % placement.num_worker_nodes,
+            placement_group_bundle_index=mapper_id % placement.num_worker_nodes
+            if not args.skip_placement_groups
+            else -1,
         ).remote(
             mapper_id,
             args.dump_file,
@@ -531,7 +535,9 @@ def main(argv=sys.argv[1:]):
     sorters = [
         Sorter.options(
             placement_group=placement.mapper_placement_group,
-            placement_group_bundle_index=i % placement.num_worker_nodes,
+            placement_group_bundle_index=i % placement.num_worker_nodes
+            if not args.skip_placement_groups
+            else -1,
         ).remote(num_reducers=placement.total_workers_per_stage, verbose=args.verbose)
         for i in range(len(quantiles) + 1)
     ]

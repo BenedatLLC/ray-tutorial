@@ -9,4 +9,4 @@ dependencies:
   - numpy
   - pip
   - pip:
-    - ray[default]==1.5.*
+    - ray[default]==1.6.*
