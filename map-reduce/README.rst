@@ -21,14 +21,6 @@ node's memory, this would be the preferred implementation.
 However, the code of the push design is more complex,
 and took 579 lines of code, versus 428 lines for the pull version.
 
-Downloading a Wikipedia dump
-============================
-The contents of the English Wikipedia is available as a single large (>76GB) XML file.
-We can download and uncompress this file as follows::
-
-  wget -O ./enwiki-latest-pages-articles.xml.bz2 http://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2
-  bzip2 -d enwiki-latest-pages-articles.xml.bz2
-
 Implementation
 ==============
 Our examples do not parse the full XML syntax of the files. Instead they search for artricle
@@ -96,6 +88,14 @@ for their sorted batches and writes them to the output file in sorted order.
 
 Running the Examples
 ====================
+Downloading a Wikipedia dump
+----------------------------
+The contents of the English Wikipedia is available as a single large (>76GB) XML file.
+We can download and uncompress this file as follows::
+
+  wget -O ./enwiki-latest-pages-articles.xml.bz2 http://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2
+  bzip2 -d enwiki-latest-pages-articles.xml.bz2
+
 Sequential Version
 ------------------
 The sequential implementation can be run from the command line. It takes two positional arguments:
