@@ -23,8 +23,8 @@ and took 579 lines of code, versus 428 lines for the pull version.
 
 Implementation
 ==============
-Our examples do not parse the full XML syntax of the files. Instead they search for artricle
-headings (inside of ``<title>`` tags) and references to other articles (inside of double braces,
+Our examples do not parse the full XML syntax of the files. Instead they search for article
+headings (inside of ``<title>`` tags) and references to other articles (inside of double brackets,
 like ``[[this]]``). The "map" part of map-reduce reads from the dump file and yields a stream of
 articles and the references they contain. We can drop the article and consider only the references,
 which each represent one incoming reference for each article targeted.
