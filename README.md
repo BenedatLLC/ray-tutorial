@@ -6,6 +6,6 @@ It contains:
 - `ray-cluster-docker` - run Ray on a cluster of on-premises nodes using Docker containers
 - `ray-docker` - run Ray in a container on a single node
 - `map-reduce` - run map reduce to find the inbound links for all wikipedia pages
-- `sklearn-grideearch` - work in progress
+- `sklearn-gridsearch` - work in progress
 
-Copyright 2021 by Benedat LLC
+Copyright 2021 by Benedat LLC. Available under the Apache 2.0 license.
