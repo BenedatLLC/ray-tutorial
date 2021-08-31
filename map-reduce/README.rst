@@ -30,26 +30,26 @@ articles and the references they contain. We can drop the article and consider o
 which each represent one incoming reference for each article targeted.
 
 The "reduce" part of the algorithm maintains a ``Counter`` of articles and their reference counts.
-For each result yielded from the mapper is used to increment the counts of the referenced articles.
+Each result yielded from the mapper is used to increment the counts of the referenced articles.
 When the entire dump file has been mapped and reduced, we can sort the (article, count) pairs by
 count decreasing (highest count first) and article increasing (alphabetical order within a count
 value) and write the result to a csv file.
 
 Sequential Implementation
 -------------------------
-The sequential implementation is straighforward: the mapper reads one article at a time
+The sequential implementation is straightforward: the mapper reads one article at a time
 and the reducer updates the counts for the references from that article. The sort is done at the end.
 
 Parallel Implementations
 ------------------------
-The parallel implementations use Ray actor classs for for the map and reduce stages.
+The parallel implementations use Ray actor classses for for the map and reduce stages.
 Each stage may have multiple copies of the map and reduce actors, allowing the program to take
 advantage of all the cores available across a Ray cluster.
 We divide the input file into "blocks", so that we can parallelize
 the reading and processing of the file. Since a given reader might
 start at an arbitrary point in the file, we read until we hit the first
 ``<title>`` tag. Then, we read lines until we reach the the end of the block.
-This will likely include mulitple articles in the dataset. At the end of the
+This will likely include multiple articles in the dataset. At the end of the
 block, we keep reading until we hit the first ``<title>`` of the next block.
 This ensures that we get the full content of the last article in our block.
 
