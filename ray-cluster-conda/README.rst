@@ -2,12 +2,11 @@ Ray Cluster Using Anaconda
 ==========================
 In this example, we create a Ray cluster using the
 `Anaconda distribution <https://www.anaconda.com/products/individual>`_.
-to set up the software on each machine.
 
 Anaconda Setup
 --------------
 First, install the Anaconda distribution on each machine of your cluster.
-Once you have installed Anaconda on each machine, create the Conda environment::
+Once you have installed Anaconda, create the Conda environment on each machine::
 
   conda env create -f environment.yml
 
