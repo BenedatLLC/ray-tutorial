@@ -39,7 +39,7 @@ where ``REDIS_PASSWORD`` is your Redis password for the Ray head.
 
 To install on a worker node, run::
 
-  echo "  $0 worker REDIS_PASSWORD MASTER_NODE
+  ./setup_service.sh worker REDIS_PASSWORD MASTER_NODE
 
 where ``MASTER_NODE`` is the hostname or IP address of the master node.
 
